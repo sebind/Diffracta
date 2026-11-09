@@ -1303,6 +1303,31 @@ function bindInteractiveCanvasEvents() {
         moved: false
       };
       canvas.setPointerCapture(e.pointerId);
+      return;
+    }
+
+    // If clicked near an unlabeled peak apex in Pattern mode, activate or add an (hkl) label there
+    const left = 165, right = 1735, top = 65, bottom = 1365;
+    if (state.viewMode === 'pattern' && cx >= left && cx <= right && cy >= top && cy <= bottom - 220) {
+      const clicked2T = state.min2Theta + ((cx - left) / (right - left)) * (state.max2Theta - state.min2Theta);
+      const peaks = (state.indexed && state.indexed.peaks) || [];
+      let nearIdx = -1;
+      let minDiff = 0.85;
+      peaks.forEach((pk, idx) => {
+        const d = Math.abs(pk.two_theta - clicked2T);
+        if (d < minDiff) {
+          minDiff = d;
+          nearIdx = idx;
+        }
+      });
+
+      if (nearIdx >= 0) {
+        peaks[nearIdx].show_label = true;
+        if (!peaks[nearIdx].hkl_str) peaks[nearIdx].hkl_str = '(100)';
+        renderHklTable();
+        renderGraph();
+        openInlineEditor({ type: 'hkl', index: nearIdx }, relX, relY);
+      }
     }
   });
 
@@ -1415,8 +1440,11 @@ function openInlineEditor(box, relX, relY) {
     input.value = state.labels.refTag;
   }
 
-  editor.style.left = `${Math.max(10, Math.min(relX - 60, 420))}px`;
-  editor.style.top = `${Math.max(10, relY - 18)}px`;
+  const frame = document.getElementById('graphFrame');
+  const maxLeft = Math.max(10, (frame ? frame.clientWidth : 500) - 190);
+  const maxTop = Math.max(10, (frame ? frame.clientHeight : 450) - 44);
+  editor.style.left = `${Math.max(8, Math.min(relX - 60, maxLeft))}px`;
+  editor.style.top = `${Math.max(8, Math.min(relY - 18, maxTop))}px`;
   editor.hidden = false;
   input.focus();
   input.select();
@@ -2217,29 +2245,37 @@ function drawRietveldPlot(ctx, W, H, registerInteractive = true) {
 function generateFullReport() {
   if (!state.pattern) return;
 
-  // 1. Run automated Search-Match
+  // 1. Run automated Search-Match if no active reference or to update FOM score
   const matches = searchMatchClient(state.pattern.two_theta, state.pattern.intensity, 0.45, state.dbResults);
   if (matches.length) {
     state.dbResults = matches;
-    state.activeReference = matches[0];
-    state.labels.refTag = formatRefTag(state.activeReference);
-    syncLabelInputs();
-    syncCellInputsFromReference(state.activeReference);
+    const prevId = state.activeReference ? state.activeReference.id : null;
+    if (!state.activeReference) {
+      state.activeReference = matches[0];
+      state.labels.refTag = formatRefTag(state.activeReference);
+      syncLabelInputs();
+      syncCellInputsFromReference(state.activeReference);
+    } else {
+      const updatedActive = matches.find((m) => m.id === prevId);
+      if (updatedActive) state.activeReference = updatedActive;
+    }
     renderDbResults();
   }
 
   const ref = state.activeReference || SEED_PHASES[0];
 
-  // 2. Run automated Miller Index Assignment
-  state.indexed = assignMillerIndicesClient(
-    state.pattern.two_theta,
-    state.pattern.intensity,
-    ref,
-    ref.system,
-    ref.cell,
-    0.55
-  );
-  renderHklTable();
+  // 2. Run automated Miller Index Assignment (while preserving manual (hkl) edits if already indexed)
+  if (!state.indexed || !state.indexed.peaks || state.indexed.peaks.length === 0) {
+    state.indexed = assignMillerIndicesClient(
+      state.pattern.two_theta,
+      state.pattern.intensity,
+      ref,
+      ref.system,
+      ref.cell,
+      0.55
+    );
+    renderHklTable();
+  }
 
   // 3. Run Full-Profile Rietveld Refinement & Microstructural Analysis
   state.rietveld = runRietveldClient(state.pattern.two_theta, state.pattern.intensity, ref, 1.5406);

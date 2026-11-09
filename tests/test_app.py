@@ -91,3 +91,18 @@ def test_upload_xy_file():
     parsed = res.json()["series"]
     assert len(parsed) == 1
     assert parsed[0]["num_points"] == 5
+
+
+def test_frontend_dom_ids_and_assets():
+    import os
+    import re
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    html_root = open(os.path.join(base, "index.html"), encoding="utf-8").read()
+    html_static = open(os.path.join(base, "static", "index.html"), encoding="utf-8").read()
+    js = open(os.path.join(base, "static", "app.js"), encoding="utf-8").read()
+
+    ids = set(re.findall(r"getElementById\('([^']+)'\)", js))
+    assert len(ids) >= 35
+    for dom_id in ids:
+        assert f'id="{dom_id}"' in html_root, f"Missing #{dom_id} in root index.html"
+        assert f'id="{dom_id}"' in html_static, f"Missing #{dom_id} in static/index.html"
