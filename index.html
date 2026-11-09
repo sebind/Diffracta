@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0" />
   <title>Diffracta — XRD Analysis</title>
   <link rel="icon" type="image/svg+xml" href="static/favicon.svg" />
   <link rel="stylesheet" href="static/styles.css" />
@@ -15,38 +15,61 @@
     </div>
 
     <div class="topbar-actions">
-      <select id="presetSelect" class="select" style="width: 155px;">
-        <option value="zno">ZnO Series (x = 0–0.2)</option>
+      <select id="presetSelect" class="select preset-select">
+        <option value="zno">ZnO Wurtzite</option>
         <option value="tio2">TiO₂ Anatase</option>
         <option value="batio3">BaTiO₃ Perovskite</option>
         <option value="silicon">Si NIST 640d</option>
         <option value="al2o3">α-Al₂O₃ Corundum</option>
       </select>
 
-      <label class="btn" for="fileUploadInput">
-        + Upload XRD
-      </label>
-      <input id="fileUploadInput" type="file" multiple accept=".xy,.csv,.txt,.dat,.xrdml,.cif" hidden />
+      <label class="btn" for="fileUploadInput">+ Upload XRD</label>
+      <input id="fileUploadInput" type="file" accept=".xy,.csv,.txt,.dat,.xrdml,.cif" hidden />
 
+      <button id="generateReportBtn" class="btn btn-chive">Report</button>
       <button id="downloadPngBtn" class="btn btn-rose">300 DPI PNG</button>
     </div>
   </header>
 
   <main class="workspace">
-    <!-- Left Panel: Spectra & Connected Databases -->
-    <aside class="panel">
+    <!-- Left Panel: Pattern, Labels & Connected Databases -->
+    <aside class="panel panel-left" data-mobile-pane="data">
       <div class="panel-scroll">
-        <!-- Uploaded / Active Spectra -->
+        <!-- Active Pattern -->
         <section class="section-block">
           <div class="section-header">
-            <h2 class="section-title">Spectra</h2>
-            <div style="display:flex; gap:4px;">
-              <button id="paletteToggleBtn" class="btn btn-sm">Theme Colors</button>
-              <label class="btn btn-sm" for="appendUploadInput">+ Add</label>
-              <input id="appendUploadInput" type="file" multiple accept=".xy,.csv,.txt,.dat,.xrdml,.cif" hidden />
-            </div>
+            <h2 class="section-title">Pattern</h2>
+            <button id="paletteToggleBtn" class="btn btn-sm">Theme Color</button>
           </div>
           <div id="traceList" class="trace-list"></div>
+        </section>
+
+        <!-- Manual Graph Labels & Legend Editor -->
+        <section class="section-block">
+          <div class="section-header">
+            <h2 class="section-title">Labels & Legend</h2>
+            <button id="resetLabelsBtn" class="btn btn-sm">Reset</button>
+          </div>
+          <div class="grid-2">
+            <div class="field-item">
+              <span class="field-tag">X-Axis</span>
+              <input id="xAxisLabelInput" class="input" type="text" value="2θ (degree)" />
+            </div>
+            <div class="field-item">
+              <span class="field-tag">Y-Axis</span>
+              <input id="yAxisLabelInput" class="input" type="text" value="Intensity (a.u.)" />
+            </div>
+          </div>
+          <div class="grid-2">
+            <div class="field-item">
+              <span class="field-tag">Legend</span>
+              <input id="legendLabelInput" class="input" type="text" value="ZnO" />
+            </div>
+            <div class="field-item">
+              <span class="field-tag">Ref Tag</span>
+              <input id="refLabelInput" class="input" type="text" value="JCPDS No. | 036-1451" />
+            </div>
+          </div>
         </section>
 
         <!-- Database Connection & Search-Match -->
@@ -60,7 +83,7 @@
             </div>
           </div>
 
-          <div id="dbFolderPath" class="folder-tag">database/ (16 Cards + COD / OPTIMADE)</div>
+          <div id="dbFolderPath" class="folder-tag">database/ (Local + COD + OPTIMADE)</div>
 
           <div class="source-pills">
             <button class="pill-btn active" data-source="all">All</button>
@@ -79,14 +102,13 @@
       </div>
     </aside>
 
-    <!-- Center Stage: Reference Graph Layout -->
-    <section class="stage">
+    <!-- Center Stage: Interactive Single-Pattern Canvas -->
+    <section class="stage mobile-active" data-mobile-pane="graph">
       <div class="stage-toolbar">
         <div class="toolbar-group">
-          <div class="tabs" style="width: 210px;">
-            <button class="tab-btn active" data-view="stacked">Stacked</button>
+          <div class="tabs" style="width: 156px;">
+            <button class="tab-btn active" data-view="pattern">Pattern</button>
             <button class="tab-btn" data-view="rietveld">Rietveld</button>
-            <button class="tab-btn" data-view="overlay">Overlay</button>
           </div>
 
           <div class="compact-field">
@@ -96,33 +118,39 @@
             <input id="max2ThetaInput" class="input" type="number" value="70" step="5" />
           </div>
 
-          <div class="compact-field">
-            <span>Offset</span>
-            <input id="stackOffsetInput" class="input" type="number" value="1.0" step="0.1" min="0.2" max="2.5" />
-          </div>
+          <button id="resetZoomBtn" class="btn btn-sm">Fit</button>
         </div>
 
         <div class="toolbar-group">
+          <button id="manualModeBtn" class="btn btn-sm btn-manual-toggle">Manual Edit: ON</button>
           <button id="toggleHklBtn" class="btn btn-sm">(hkl) On</button>
           <span id="cursorReadout" class="cursor-readout">2θ: —</span>
         </div>
       </div>
 
-      <div class="canvas-viewport">
-        <div class="graph-frame">
+      <div class="canvas-viewport" id="canvasViewport">
+        <div class="graph-frame" id="graphFrame">
           <canvas id="xrdCanvas" width="1800" height="1575"></canvas>
+          <!-- Inline Floating Editor for Interactive Canvas Labels -->
+          <div id="canvasInlineEditor" class="canvas-inline-editor" hidden>
+            <input id="canvasInlineInput" type="text" class="input" />
+            <button id="canvasInlineSaveBtn" class="btn btn-sm btn-rose">✓</button>
+          </div>
         </div>
       </div>
     </section>
 
     <!-- Right Panel: Miller Indices & Rietveld Refinement -->
-    <aside class="panel panel-right">
+    <aside class="panel panel-right" data-mobile-pane="analysis">
       <div class="panel-scroll">
         <!-- Miller Indices Assignment -->
         <section class="section-block">
           <div class="section-header">
             <h2 class="section-title">Miller Indices</h2>
-            <button id="assignHklBtn" class="btn btn-sm btn-chive">Assign (hkl)</button>
+            <div style="display:flex; gap:4px;">
+              <button id="addCustomHklBtn" class="btn btn-sm">+ Peak</button>
+              <button id="assignHklBtn" class="btn btn-sm btn-chive">Assign (hkl)</button>
+            </div>
           </div>
 
           <div class="grid-3">
@@ -146,6 +174,7 @@
                   <th>d (Å)</th>
                   <th>I (%)</th>
                   <th>(hkl)</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody id="hklTableBody"></tbody>
@@ -157,10 +186,7 @@
         <section class="section-block">
           <div class="section-header">
             <h2 class="section-title">Rietveld</h2>
-            <div style="display:flex; gap:5px; align-items:center;">
-              <select id="rietveldTraceSelect" class="select" style="width:92px; padding:3px 6px; font-size:11px;"></select>
-              <button id="runRietveldBtn" class="btn btn-sm btn-rose">Refine</button>
-            </div>
+            <button id="runRietveldBtn" class="btn btn-sm btn-rose">Refine</button>
           </div>
 
           <div class="grid-2">
@@ -203,14 +229,37 @@
               <span id="statVol" class="stat-value">—</span>
             </div>
             <div class="stat-box">
-              <span class="stat-label">Zero (°2θ)</span>
-              <span id="statZero" class="stat-value">—</span>
+              <span class="stat-label">Strain (%)</span>
+              <span id="statStrain" class="stat-value">—</span>
             </div>
           </div>
         </section>
       </div>
     </aside>
   </main>
+
+  <!-- Mobile Bottom Navigation -->
+  <nav class="mobile-nav" id="mobileNav">
+    <button class="mobile-nav-btn active" data-target="graph">Graph</button>
+    <button class="mobile-nav-btn" data-target="data">Pattern & DB</button>
+    <button class="mobile-nav-btn" data-target="analysis">(hkl) & Rietveld</button>
+  </nav>
+
+  <!-- Publication Report Modal -->
+  <div id="reportModal" class="report-modal-backdrop" hidden>
+    <div class="report-modal">
+      <div class="report-modal-toolbar no-print">
+        <span class="brand-title" style="font-size:20px;">Publication XRD Report</span>
+        <div class="report-actions">
+          <button id="printReportBtn" class="btn btn-rose">Print / PDF</button>
+          <button id="downloadReportHtmlBtn" class="btn btn-chive">HTML</button>
+          <button id="downloadReportCsvBtn" class="btn">CSV</button>
+          <button id="closeReportBtn" class="btn">✕</button>
+        </div>
+      </div>
+      <div id="reportContent" class="report-sheet"></div>
+    </div>
+  </div>
 
   <script src="static/app.js"></script>
 </body>

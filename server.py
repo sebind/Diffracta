@@ -275,6 +275,27 @@ def api_rietveld(req: RietveldRequest):
     return res
 
 
+class ReportRequest(BaseModel):
+    two_theta: List[float] = Field(..., min_length=10)
+    intensity: List[float] = Field(..., min_length=10)
+    sample_name: str = "Sample"
+    wavelength: float = 1.5406
+    phase: Optional[Dict[str, Any]] = None
+
+
+@app.post("/api/report")
+def api_generate_report(req: ReportRequest):
+    if len(req.two_theta) != len(req.intensity):
+        raise HTTPException(status_code=400, detail="two_theta and intensity must have the same length")
+    return xrd_engine.generate_full_report(
+        req.two_theta,
+        req.intensity,
+        sample_name=req.sample_name,
+        wavelength=req.wavelength,
+        phase=req.phase
+    )
+
+
 @app.get("/api/preset/{name}")
 def api_load_preset(name: str):
     import numpy as np
@@ -283,12 +304,12 @@ def api_load_preset(name: str):
         return api_init()
 
     preset_map = {
-        "tio2": ("021-1272", [("x = 0", 0.0, "#e60000"), ("x = 0.05", -0.06, "#0018c4")]),
+        "tio2": ("021-1272", [("TiO2 Anatase", 0.0, "#e60000")]),
         "silicon": ("027-1402", [("Si NIST", 0.0, "#e60000")]),
-        "batio3": ("005-0626", [("BaTiO3 300K", 0.0, "#e60000"), ("BaTiO3 400K", -0.07, "#0018c4")]),
+        "batio3": ("005-0626", [("BaTiO3", 0.0, "#e60000")]),
         "al2o3": ("046-1212", [("α-Al2O3", 0.0, "#e60000")]),
     }
-    pid, traces_cfg = preset_map.get(name, ("036-1451", [("x = 0", 0.0, "#e60000")]))
+    pid, traces_cfg = preset_map.get(name, ("036-1451", [("ZnO", 0.0, "#e60000")]))
     ref = next((p for p in local_db if p["id"] == pid), local_db[0])
 
     tt = np.linspace(20.0, 75.0, 1800)

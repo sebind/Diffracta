@@ -418,22 +418,16 @@ def generate_reference_zno_series():
 
 
 def get_default_zno_series() -> List[Dict[str, Any]]:
-    """Loads the 3-curve ZnO series (x = 0, x = 0.1, x = 0.2) for immediate display."""
+    """Loads the default single ZnO XRD pattern for display."""
     ensure_directories_and_seed()
     series = []
-    meta = [
-        ("ZnO_x0.xy", "x = 0", "#e60000"),
-        ("ZnO_x0.1.xy", "x = 0.1", "#0018c4"),
-        ("ZnO_x0.2.xy", "x = 0.2", "#006b1b"),
-    ]
-    for fname, label, color in meta:
-        fpath = os.path.join(SAMPLE_DIR, fname)
-        if os.path.exists(fpath):
-            with open(fpath, "r", encoding="utf-8") as f:
-                parsed = parse_xrd_content(f.read(), fname)
-                parsed["label"] = label
-                parsed["color"] = color
-                series.append(parsed)
+    fpath = os.path.join(SAMPLE_DIR, "ZnO_x0.xy")
+    if os.path.exists(fpath):
+        with open(fpath, "r", encoding="utf-8") as f:
+            parsed = parse_xrd_content(f.read(), "ZnO_x0.xy")
+            parsed["label"] = "ZnO"
+            parsed["color"] = "#e60000"
+            series.append(parsed)
     return series
 
 
@@ -1193,6 +1187,15 @@ def run_rietveld_refinement(
     mean_fwhm_deg = math.sqrt(max(float(p_opt[6]), 0.004))
     crystallite_nm = float((0.9 * (wavelength / 10.0)) / (math.radians(mean_fwhm_deg) * math.cos(math.radians(18.0))))
 
+    # Microstrain (%) from Caglioti U & Williamson-Hall approximation
+    u_val = max(float(p_opt[4]), 0.0001)
+    microstrain_pct = float((math.radians(math.sqrt(u_val)) / 4.0) * 100.0)
+
+    # Degree of crystallinity (%) = Crystalline Peak Area / Total Area
+    cryst_area = float(np.sum(np.maximum(y_calc - y_bkg, 0.0)))
+    total_area = float(np.sum(np.maximum(y_calc, 1.0)))
+    crystallinity_pct = float(min(99.8, max(35.0, (cryst_area / max(total_area, 1.0)) * 100.0)))
+
     return {
         "phase_name": phase.get("name", "Refined Phase"),
         "phase_id": phase.get("jcpds", phase.get("id", "")),
@@ -1218,6 +1221,42 @@ def run_rietveld_refinement(
             "U": round(float(p_opt[4]), 4),
             "V": round(float(p_opt[5]), 4),
             "W": round(float(p_opt[6]), 4),
-            "crystallite_nm": round(crystallite_nm, 1)
+            "crystallite_nm": round(crystallite_nm, 1),
+            "microstrain_pct": round(microstrain_pct, 4),
+            "crystallinity_pct": round(crystallinity_pct, 1)
         }
+    }
+
+
+def generate_full_report(
+    two_theta: List[float],
+    intensity: List[float],
+    sample_name: str = "Sample",
+    wavelength: float = 1.5406,
+    phase: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """Runs automated Search-Match, Miller indexing, and Rietveld refinement to produce a complete analysis report."""
+    matches = search_match_phases(two_theta, intensity, tolerance_deg=0.45)
+    best_phase = phase or (matches[0] if matches else load_local_database()[0])
+
+    indexed = assign_miller_indices(
+        two_theta,
+        intensity,
+        reference_phase=best_phase,
+        tolerance_deg=0.55,
+        prominence_pct=5.0
+    )
+    rietveld = run_rietveld_refinement(
+        two_theta,
+        intensity,
+        best_phase,
+        wavelength=wavelength
+    )
+    return {
+        "sample_name": sample_name,
+        "wavelength": wavelength,
+        "matched_phase": best_phase,
+        "candidate_matches": matches[:5],
+        "indexed": indexed,
+        "rietveld": rietveld
     }

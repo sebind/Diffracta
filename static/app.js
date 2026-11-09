@@ -1,5 +1,5 @@
 /* ============================================================================
-   DIFFRACTA — Client-Side & Hybrid XRD Engine (100% GitHub Pages Compatible)
+   DIFFRACTA — Interactive Single-Pattern XRD, Rietveld & Publication Report
    ============================================================================ */
 
 const SEED_PHASES = [
@@ -227,23 +227,33 @@ const SEED_PHASES = [
   }
 ];
 
-const CLASSIC_COLORS = ['#e60000', '#0018c4', '#006b1b', '#8B008B', '#D2691E'];
-const THEME_COLORS = ['#C21E56', '#7D6B91', '#18241E', '#A63A69', '#4A6B5B'];
-
 const state = {
-  series: [],
+  pattern: null,           // Single active XRD pattern { filename, label, two_theta, intensity, color }
   localDb: [],
   dbResults: [],
   activeReference: null,
   indexed: { system: 'Hexagonal', cell: { a: 3.2498, b: 3.2498, c: 5.2066 }, peaks: [] },
   rietveld: null,
-  viewMode: 'stacked',
+  viewMode: 'pattern',     // 'pattern' | 'rietveld'
+  manualMode: true,        // Interactive Manual Edit Mode for Axis Labels, Legend, & Miller Indices
   showHkl: true,
   dbSource: 'all',
   min2Theta: 20,
   max2Theta: 70,
-  stackOffset: 1.0,
-  useThemeTraceColors: false
+  useThemeColor: false,
+  labels: {
+    xAxis: '2θ (degree)',
+    yAxis: 'Intensity (a.u.)',
+    legend: 'ZnO',
+    refTag: 'JCPDS No. | 036-1451',
+    legendOffset: { dx: 0, dy: 0 },
+    refOffset: { dx: 0, dy: 0 }
+  },
+  hitBoxes: [],            // Registered interactive canvas elements for click/drag/hover
+  hoveredBox: null,
+  draggingItem: null,
+  editingTarget: null,
+  cursor2Theta: null
 };
 
 /* ============================================================================
@@ -269,84 +279,55 @@ function seededRandom(seed) {
   };
 }
 
-function synthesizePresetSeries(presetName) {
+function synthesizeSinglePreset(presetName) {
   const localDb = loadLocalDatabaseClient();
   const presetMap = {
-    zno: {
-      pid: '036-1451', minX: 20, maxX: 70,
-      traces: [
-        ['x = 0', 0.00, 0.23, 1.00, '#e60000', 42],
-        ['x = 0.1', -0.05, 0.24, 0.96, '#0018c4', 107],
-        ['x = 0.2', -0.10, 0.26, 0.90, '#006b1b', 219]
-      ]
-    },
-    tio2: {
-      pid: '021-1272', minX: 20, maxX: 75,
-      traces: [
-        ['x = 0', 0.00, 0.24, 1.00, '#e60000', 55],
-        ['x = 0.05', -0.06, 0.25, 0.95, '#0018c4', 89]
-      ]
-    },
-    silicon: {
-      pid: '027-1402', minX: 20, maxX: 80,
-      traces: [['Si NIST', 0.00, 0.22, 1.00, '#e60000', 77]]
-    },
-    batio3: {
-      pid: '005-0626', minX: 20, maxX: 70,
-      traces: [
-        ['BaTiO3 300K', 0.00, 0.24, 1.00, '#e60000', 31],
-        ['BaTiO3 400K', -0.07, 0.24, 0.94, '#0018c4', 63]
-      ]
-    },
-    al2o3: {
-      pid: '046-1212', minX: 20, maxX: 75,
-      traces: [['α-Al2O3', 0.00, 0.23, 1.00, '#e60000', 91]]
-    }
+    zno: { pid: '036-1451', minX: 20, maxX: 70, label: 'ZnO', fwhm: 0.23, seed: 42 },
+    tio2: { pid: '021-1272', minX: 20, maxX: 75, label: 'TiO₂ Anatase', fwhm: 0.24, seed: 55 },
+    silicon: { pid: '027-1402', minX: 20, maxX: 80, label: 'Si NIST 640d', fwhm: 0.22, seed: 77 },
+    batio3: { pid: '005-0626', minX: 20, maxX: 70, label: 'BaTiO₃', fwhm: 0.24, seed: 31 },
+    al2o3: { pid: '046-1212', minX: 20, maxX: 75, label: 'α-Al₂O₃', fwhm: 0.23, seed: 91 }
   };
 
   const cfg = presetMap[presetName] || presetMap.zno;
   const ref = localDb.find((p) => p.id === cfg.pid) || localDb[0];
   const nPts = 2001;
   const step = (cfg.maxX - cfg.minX) / (nPts - 1);
+  const rand = seededRandom(cfg.seed);
 
-  const series = cfg.traces.map(([label, shift, baseFwhm, scale, color, seed]) => {
-    const rand = seededRandom(seed);
-    const two_theta = new Array(nPts);
-    const intensity = new Array(nPts);
+  const two_theta = new Array(nPts);
+  const intensity = new Array(nPts);
 
-    for (let i = 0; i < nPts; i++) {
-      const tt = cfg.minX + i * step;
-      two_theta[i] = Number(tt.toFixed(4));
-      let y = 85.0 + 12.0 * Math.exp(-(tt - cfg.minX) / 35.0);
-      for (const pk of ref.peaks) {
-        const pos = pk.two_theta + shift * (pk.two_theta / 36.25);
-        if (Math.abs(tt - pos) <= 2.6) {
-          const thRad = (pos / 2.0) * (Math.PI / 180.0);
-          const fwhm = Math.sqrt(0.012 * Math.pow(Math.tan(thRad), 2) + 0.002 * Math.tan(thRad) + baseFwhm * baseFwhm);
-          y += pseudoVoigtScalar(tt, pos, pk.intensity * 18.0 * scale, fwhm, 0.58);
-        }
+  for (let i = 0; i < nPts; i++) {
+    const tt = cfg.minX + i * step;
+    two_theta[i] = Number(tt.toFixed(4));
+    let y = 85.0 + 12.0 * Math.exp(-(tt - cfg.minX) / 35.0);
+    for (const pk of ref.peaks) {
+      if (Math.abs(tt - pk.two_theta) <= 2.6) {
+        const thRad = (pk.two_theta / 2.0) * (Math.PI / 180.0);
+        const fwhm = Math.sqrt(0.012 * Math.pow(Math.tan(thRad), 2) + 0.002 * Math.tan(thRad) + cfg.fwhm * cfg.fwhm);
+        y += pseudoVoigtScalar(tt, pk.two_theta, pk.intensity * 18.0, fwhm, 0.58);
       }
-      // Box-Muller Gaussian noise scaled by Poisson sqrt(y)
-      const u1 = Math.max(rand(), 1e-7);
-      const u2 = rand();
-      const z = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2);
-      y = Math.max(10.0, y + z * Math.sqrt(y) * 0.95);
-      intensity[i] = Number(y.toFixed(2));
     }
+    const u1 = Math.max(rand(), 1e-7);
+    const u2 = rand();
+    const z = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2);
+    y = Math.max(10.0, y + z * Math.sqrt(y) * 0.95);
+    intensity[i] = Number(y.toFixed(2));
+  }
 
-    return {
-      filename: `${label}.xy`,
-      label,
-      two_theta,
-      intensity,
-      min_2theta: cfg.minX,
-      max_2theta: cfg.maxX,
-      num_points: nPts,
-      color
-    };
-  });
+  const pattern = {
+    filename: `${cfg.label}.xy`,
+    label: cfg.label,
+    two_theta,
+    intensity,
+    min_2theta: cfg.minX,
+    max_2theta: cfg.maxX,
+    num_points: nPts,
+    color: state.useThemeColor ? '#C21E56' : '#e60000'
+  };
 
-  return { series, ref, localDb };
+  return { pattern, ref, localDb };
 }
 
 function loadLocalDatabaseClient() {
@@ -546,7 +527,7 @@ function parseXrdContentClient(text, filename = 'scan.xy') {
       }
     }
   }
-  if (!pairs.length) throw new Error(`Could not parse data from ${filename}`);
+  if (!pairs.length) throw new Error(`Could not parse numeric data from ${filename}`);
   pairs.sort((a, b) => a[0] - b[0]);
 
   return {
@@ -564,7 +545,6 @@ function detectPeaksClient(twoTheta, intensity, prominencePct = 5.5, minDistDeg 
   const n = twoTheta.length;
   if (n < 10) return [];
 
-  // 5-point moving smoothing
   const smooth = new Float64Array(n);
   for (let i = 0; i < n; i++) {
     let s = 0, c = 0;
@@ -601,7 +581,6 @@ function detectPeaksClient(twoTheta, intensity, prominencePct = 5.5, minDistDeg 
     }
   }
 
-  // Non-maximum suppression within minPts
   candidates.sort((a, b) => net[b] - net[a]);
   const kept = [];
   for (const idx of candidates) {
@@ -616,11 +595,19 @@ function detectPeaksClient(twoTheta, intensity, prominencePct = 5.5, minDistDeg 
     const tt = twoTheta[idx];
     const thRad = (tt / 2.0) * (Math.PI / 180.0);
     const d = wavelength / (2.0 * Math.sin(thRad));
+    // Estimate local FWHM
+    const halfMax = net[idx] * 0.5;
+    let leftIdx = idx, rightIdx = idx;
+    while (leftIdx > 0 && net[leftIdx] > halfMax) leftIdx--;
+    while (rightIdx < n - 1 && net[rightIdx] > halfMax) rightIdx++;
+    const fwhm = Math.max(0.08, twoTheta[rightIdx] - twoTheta[leftIdx]);
+
     return {
       two_theta: Number(tt.toFixed(3)),
       intensity_raw: Number(intensity[idx].toFixed(2)),
       intensity: Number(((net[idx] / maxNet) * 100.0).toFixed(1)),
-      d: Number(d.toFixed(4))
+      d: Number(d.toFixed(4)),
+      fwhm: Number(fwhm.toFixed(3))
     };
   });
 }
@@ -700,27 +687,35 @@ function assignMillerIndicesClient(twoTheta, intensity, referencePhase, system, 
       indexed.push({
         two_theta: ep.two_theta,
         two_theta_calc: best.two_theta,
+        delta_2theta: Number((ep.two_theta - best.two_theta).toFixed(4)),
         d_obs: ep.d,
         d_calc: best.d,
+        fwhm: ep.fwhm || 0.24,
         intensity: ep.intensity,
         intensity_raw: ep.intensity_raw,
         hkl: best.hkl,
         hkl_str: hklStr,
         indexed: true,
-        show_label: showLabel
+        show_label: showLabel,
+        dx: 0,
+        dy: 0
       });
     } else {
       indexed.push({
         two_theta: ep.two_theta,
         two_theta_calc: null,
+        delta_2theta: null,
         d_obs: ep.d,
         d_calc: null,
+        fwhm: ep.fwhm || 0.24,
         intensity: ep.intensity,
         intensity_raw: ep.intensity_raw,
         hkl: null,
         hkl_str: '',
         indexed: false,
-        show_label: false
+        show_label: false,
+        dx: 0,
+        dy: 0
       });
     }
   }
@@ -747,10 +742,11 @@ function runRietveldClient(twoTheta, intensity, phase, wavelength = 1.5406) {
   let zero = 0.0;
   let epsA = 0.0;
   let epsC = 0.0;
+  let U = 0.012;
   let W = 0.055;
   let eta = 0.58;
 
-  const evalProfile = (sc, zr, eA, eC, wVal, etaVal, b0, b1) => {
+  const evalProfile = (sc, zr, eA, eC, uVal, wVal, etaVal, b0, b1) => {
     const yCalc = new Float64Array(n);
     const yBkg = new Float64Array(n);
     const aCur = a0 * (1.0 + eA);
@@ -786,7 +782,7 @@ function runRietveldClient(twoTheta, intensity, phase, wavelength = 1.5406) {
       }
 
       const thRad = (pos / 2.0) * (Math.PI / 180.0);
-      const fwhm = Math.sqrt(0.012 * Math.pow(Math.tan(thRad), 2) + Math.max(wVal, 0.003));
+      const fwhm = Math.sqrt(Math.max(uVal, 0.0001) * Math.pow(Math.tan(thRad), 2) + Math.max(wVal, 0.003));
       const amp = sc * pk.intensity;
       const win = fwhm * 8.5;
 
@@ -812,8 +808,7 @@ function runRietveldClient(twoTheta, intensity, phase, wavelength = 1.5406) {
     return { wss, yCalc, yBkg, ticks };
   };
 
-  // Coordinate-descent refinement over parameters (converges in ~35 ms)
-  let best = evalProfile(scale, zero, epsA, epsC, W, eta, bg0, bgSlope);
+  let best = evalProfile(scale, zero, epsA, epsC, U, W, eta, bg0, bgSlope);
   const steps = [
     [0.08, 0.02, 0.0012, 0.0012, 0.006, 0.04, 3.0],
     [0.02, 0.006, 0.0004, 0.0004, 0.002, 0.015, 1.0],
@@ -823,41 +818,42 @@ function runRietveldClient(twoTheta, intensity, phase, wavelength = 1.5406) {
   for (const [dSc, dZr, dEa, dEc, dW, dEta, dBg] of steps) {
     for (let iter = 0; iter < 4; iter++) {
       for (const dir of [-1, 1]) {
-        const cand = evalProfile(scale * (1 + dir * dSc), zero, epsA, epsC, W, eta, bg0, bgSlope);
+        const cand = evalProfile(scale * (1 + dir * dSc), zero, epsA, epsC, U, W, eta, bg0, bgSlope);
         if (cand.wss < best.wss) { scale *= (1 + dir * dSc); best = cand; }
       }
       for (const dir of [-1, 1]) {
-        const cand = evalProfile(scale, zero + dir * dZr, epsA, epsC, W, eta, bg0, bgSlope);
+        const cand = evalProfile(scale, zero + dir * dZr, epsA, epsC, U, W, eta, bg0, bgSlope);
         if (cand.wss < best.wss) { zero += dir * dZr; best = cand; }
       }
       for (const dir of [-1, 1]) {
-        const cand = evalProfile(scale, zero, epsA + dir * dEa, epsC, W, eta, bg0, bgSlope);
+        const cand = evalProfile(scale, zero, epsA + dir * dEa, epsC, U, W, eta, bg0, bgSlope);
         if (cand.wss < best.wss) { epsA += dir * dEa; best = cand; }
       }
       if (sys !== 'cubic') {
         for (const dir of [-1, 1]) {
-          const cand = evalProfile(scale, zero, epsA, epsC + dir * dEc, W, eta, bg0, bgSlope);
+          const cand = evalProfile(scale, zero, epsA, epsC + dir * dEc, U, W, eta, bg0, bgSlope);
           if (cand.wss < best.wss) { epsC += dir * dEc; best = cand; }
         }
       }
       for (const dir of [-1, 1]) {
         const nw = Math.max(0.004, W + dir * dW);
-        const cand = evalProfile(scale, zero, epsA, epsC, nw, eta, bg0, bgSlope);
+        const cand = evalProfile(scale, zero, epsA, epsC, U, nw, eta, bg0, bgSlope);
         if (cand.wss < best.wss) { W = nw; best = cand; }
       }
       for (const dir of [-1, 1]) {
         const ne = Math.min(0.95, Math.max(0.1, eta + dir * dEta));
-        const cand = evalProfile(scale, zero, epsA, epsC, W, ne, bg0, bgSlope);
+        const cand = evalProfile(scale, zero, epsA, epsC, U, W, ne, bg0, bgSlope);
         if (cand.wss < best.wss) { eta = ne; best = cand; }
       }
       for (const dir of [-1, 1]) {
-        const cand = evalProfile(scale, zero, epsA, epsC, W, eta, bg0 + dir * dBg, bgSlope);
+        const cand = evalProfile(scale, zero, epsA, epsC, U, W, eta, bg0 + dir * dBg, bgSlope);
         if (cand.wss < best.wss) { bg0 += dir * dBg; best = cand; }
       }
     }
   }
 
   let sumAbsDiff = 0, sumObs = 0, numRwp = 0, denRwp = 0;
+  let crystArea = 0, totalArea = 0;
   const yDiff = new Array(n);
   for (let i = 0; i < n; i++) {
     const d = intensity[i] - best.yCalc[i];
@@ -867,6 +863,8 @@ function runRietveldClient(twoTheta, intensity, phase, wavelength = 1.5406) {
     const w = 1.0 / Math.max(intensity[i], 1.0);
     numRwp += w * d * d;
     denRwp += w * intensity[i] * intensity[i];
+    crystArea += Math.max(0, best.yCalc[i] - best.yBkg[i]);
+    totalArea += Math.max(1, best.yCalc[i]);
   }
 
   const rp = (sumAbsDiff / Math.max(sumObs, 1)) * 100.0;
@@ -881,6 +879,8 @@ function runRietveldClient(twoTheta, intensity, phase, wavelength = 1.5406) {
   const vol = aRef * bRef * cRef * Math.sin(gammaRad);
   const meanFwhmDeg = Math.sqrt(Math.max(W, 0.004));
   const crystalliteNm = (0.9 * (wavelength / 10.0)) / (((meanFwhmDeg * Math.PI) / 180.0) * Math.cos((18.0 * Math.PI) / 180.0));
+  const microstrainPct = (((Math.sqrt(Math.max(U, 0.0001)) * Math.PI) / 180.0) / 4.0) * 100.0;
+  const crystallinityPct = Math.min(99.5, Math.max(35.0, (crystArea / Math.max(totalArea, 1)) * 100.0));
 
   return {
     phase_name: phase.name || phase.formula,
@@ -903,7 +903,12 @@ function runRietveldClient(twoTheta, intensity, phase, wavelength = 1.5406) {
       c: Number(cRef.toFixed(4)),
       volume: Number(vol.toFixed(2)),
       zero_shift: Number(zero.toFixed(4)),
-      crystallite_nm: Number(crystalliteNm.toFixed(1))
+      eta: Number(eta.toFixed(3)),
+      U: Number(U.toFixed(4)),
+      W: Number(W.toFixed(4)),
+      crystallite_nm: Number(crystalliteNm.toFixed(1)),
+      microstrain_pct: Number(microstrainPct.toFixed(4)),
+      crystallinity_pct: Number(crystallinityPct.toFixed(1))
     }
   };
 }
@@ -980,12 +985,9 @@ async function queryOnlineDatabasesClient(query, source = 'all') {
             source: providerName
           });
         }
-      } catch (_) {
-        // Fallback to embedded COD/RRUFF records if offline or blocked
-      }
+      } catch (_) {}
     }
 
-    // Ensure COD / RRUFF matching cards are always available even offline
     if (results.length === 0) {
       for (const p of SEED_PHASES) {
         if (
@@ -1008,7 +1010,7 @@ async function queryOnlineDatabasesClient(query, source = 'all') {
 }
 
 /* ============================================================================
-   UI CONTROLLER & APPLICATION BOOTSTRAP
+   UI CONTROLLER & INTERACTIVE CANVAS BOOTSTRAP
    ============================================================================ */
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -1016,65 +1018,114 @@ document.addEventListener('DOMContentLoaded', () => {
   loadPreset('zno');
 });
 
+function formatRefTag(phase) {
+  if (!phase) return '';
+  const refId = String(phase.jcpds || phase.id || '');
+  if (refId.startsWith('COD')) {
+    return `COD No. | ${refId.replace(/^COD[\s\-]*/, '')}`;
+  }
+  if (refId.startsWith('OPT')) {
+    return `${phase.formula || 'Ref'} | ${refId}`;
+  }
+  return `JCPDS No. | ${refId}`;
+}
+
 function loadPreset(presetName) {
-  const { series, ref, localDb } = synthesizePresetSeries(presetName);
-  state.series = series;
+  const { pattern, ref, localDb } = synthesizeSinglePreset(presetName);
+  state.pattern = pattern;
   state.localDb = localDb;
   state.activeReference = ref;
-  state.min2Theta = series[0].min_2theta;
-  state.max2Theta = series[0].max_2theta;
+  state.min2Theta = pattern.min_2theta;
+  state.max2Theta = pattern.max_2theta;
+
   document.getElementById('min2ThetaInput').value = state.min2Theta;
   document.getElementById('max2ThetaInput').value = state.max2Theta;
 
-  const topTrace = series[series.length - 1];
+  state.labels.legend = pattern.label;
+  state.labels.refTag = formatRefTag(ref);
+  state.labels.legendOffset = { dx: 0, dy: 0 };
+  state.labels.refOffset = { dx: 0, dy: 0 };
+  syncLabelInputs();
+
   state.indexed = assignMillerIndicesClient(
-    topTrace.two_theta,
-    topTrace.intensity,
+    pattern.two_theta,
+    pattern.intensity,
     ref,
     ref.system,
     ref.cell
   );
-  state.dbResults = searchMatchClient(series[0].two_theta, series[0].intensity);
+  state.dbResults = searchMatchClient(pattern.two_theta, pattern.intensity);
   state.rietveld = null;
 
   syncCellInputsFromReference(ref);
   renderTraceList();
   renderDbResults();
   renderHklTable();
-  populateRietveldTraceSelect();
   renderGraph();
+}
+
+function syncLabelInputs() {
+  document.getElementById('xAxisLabelInput').value = state.labels.xAxis;
+  document.getElementById('yAxisLabelInput').value = state.labels.yAxis;
+  document.getElementById('legendLabelInput').value = state.labels.legend;
+  document.getElementById('refLabelInput').value = state.labels.refTag;
 }
 
 function bindEvents() {
   document.getElementById('presetSelect').addEventListener('change', (e) => {
-    state.viewMode = 'stacked';
+    state.viewMode = 'pattern';
     updateViewTabs();
     loadPreset(e.target.value);
   });
 
   document.getElementById('fileUploadInput').addEventListener('change', async (e) => {
     if (!e.target.files.length) return;
-    await uploadXrdFiles(e.target.files, false);
-    e.target.value = '';
-  });
-
-  document.getElementById('appendUploadInput').addEventListener('change', async (e) => {
-    if (!e.target.files.length) return;
-    await uploadXrdFiles(e.target.files, true);
+    await uploadSingleXrdFile(e.target.files[0]);
     e.target.value = '';
   });
 
   document.getElementById('paletteToggleBtn').addEventListener('click', (e) => {
-    state.useThemeTraceColors = !state.useThemeTraceColors;
-    const pal = state.useThemeTraceColors ? THEME_COLORS : CLASSIC_COLORS;
-    state.series.forEach((s, idx) => {
-      s.color = pal[idx % pal.length];
-    });
-    e.target.textContent = state.useThemeTraceColors ? 'Classic Colors' : 'Theme Colors';
+    state.useThemeColor = !state.useThemeColor;
+    if (state.pattern) {
+      state.pattern.color = state.useThemeColor ? '#C21E56' : '#e60000';
+    }
+    e.target.textContent = state.useThemeColor ? 'Classic Color' : 'Theme Color';
     renderTraceList();
     renderGraph();
   });
 
+  // Manual Label Inputs
+  document.getElementById('xAxisLabelInput').addEventListener('input', (e) => {
+    state.labels.xAxis = e.target.value;
+    renderGraph();
+  });
+  document.getElementById('yAxisLabelInput').addEventListener('input', (e) => {
+    state.labels.yAxis = e.target.value;
+    renderGraph();
+  });
+  document.getElementById('legendLabelInput').addEventListener('input', (e) => {
+    state.labels.legend = e.target.value;
+    if (state.pattern) state.pattern.label = e.target.value;
+    renderTraceList();
+    renderGraph();
+  });
+  document.getElementById('refLabelInput').addEventListener('input', (e) => {
+    state.labels.refTag = e.target.value;
+    renderGraph();
+  });
+  document.getElementById('resetLabelsBtn').addEventListener('click', () => {
+    state.labels.xAxis = '2θ (degree)';
+    state.labels.yAxis = 'Intensity (a.u.)';
+    state.labels.legend = state.pattern ? state.pattern.label : 'Sample';
+    state.labels.refTag = formatRefTag(state.activeReference);
+    state.labels.legendOffset = { dx: 0, dy: 0 };
+    state.labels.refOffset = { dx: 0, dy: 0 };
+    (state.indexed.peaks || []).forEach((pk) => { pk.dx = 0; pk.dy = 0; });
+    syncLabelInputs();
+    renderGraph();
+  });
+
+  // Database Upload
   document.getElementById('dbUploadInput').addEventListener('change', async (e) => {
     if (!e.target.files.length) return;
     for (const file of e.target.files) {
@@ -1111,6 +1162,7 @@ function bindEvents() {
 
   document.getElementById('searchMatchBtn').addEventListener('click', runSearchMatch);
 
+  // View Mode Tabs (Pattern | Rietveld)
   document.querySelectorAll('.tab-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
       state.viewMode = btn.dataset.view;
@@ -1131,8 +1183,23 @@ function bindEvents() {
     state.max2Theta = parseFloat(e.target.value) || 70;
     renderGraph();
   });
-  document.getElementById('stackOffsetInput').addEventListener('input', (e) => {
-    state.stackOffset = parseFloat(e.target.value) || 1.0;
+  document.getElementById('resetZoomBtn').addEventListener('click', () => {
+    if (!state.pattern) return;
+    state.min2Theta = Math.max(5, Math.floor(state.pattern.min_2theta / 5) * 5);
+    state.max2Theta = Math.min(100, Math.ceil(state.pattern.max_2theta / 5) * 5);
+    document.getElementById('min2ThetaInput').value = state.min2Theta;
+    document.getElementById('max2ThetaInput').value = state.max2Theta;
+    renderGraph();
+  });
+
+  // Manual Edit Mode Toggle
+  const manualBtn = document.getElementById('manualModeBtn');
+  manualBtn.classList.toggle('active', state.manualMode);
+  manualBtn.addEventListener('click', () => {
+    state.manualMode = !state.manualMode;
+    manualBtn.textContent = state.manualMode ? 'Manual Edit: ON' : 'Manual Edit: OFF';
+    manualBtn.classList.toggle('active', state.manualMode);
+    closeInlineEditor();
     renderGraph();
   });
 
@@ -1142,24 +1209,248 @@ function bindEvents() {
     renderGraph();
   });
 
+  document.getElementById('addCustomHklBtn').addEventListener('click', () => {
+    if (!state.indexed.peaks) state.indexed.peaks = [];
+    const mid2T = Number(((state.min2Theta + state.max2Theta) / 2).toFixed(2));
+    const dVal = Number((1.5406 / (2 * Math.sin((mid2T / 2) * (Math.PI / 180)))).toFixed(4));
+    state.indexed.peaks.push({
+      two_theta: mid2T,
+      two_theta_calc: mid2T,
+      d_obs: dVal,
+      d_calc: dVal,
+      fwhm: 0.24,
+      intensity: 50,
+      intensity_raw: 500,
+      hkl: [1, 0, 0],
+      hkl_str: '(100)',
+      indexed: true,
+      show_label: true,
+      dx: 0,
+      dy: 0
+    });
+    state.indexed.peaks.sort((a, b) => a.two_theta - b.two_theta);
+    renderHklTable();
+    renderGraph();
+  });
+
   document.getElementById('assignHklBtn').addEventListener('click', () => runIndexPeaks(false));
   document.getElementById('runRietveldBtn').addEventListener('click', runRietveld);
   document.getElementById('downloadPngBtn').addEventListener('click', download300DpiPng);
 
+  // Automatic Full Report Generator
+  document.getElementById('generateReportBtn').addEventListener('click', generateFullReport);
+  document.getElementById('closeReportBtn').addEventListener('click', () => {
+    document.getElementById('reportModal').hidden = true;
+  });
+  document.getElementById('printReportBtn').addEventListener('click', () => window.print());
+  document.getElementById('downloadReportHtmlBtn').addEventListener('click', downloadStandaloneReportHtml);
+  document.getElementById('downloadReportCsvBtn').addEventListener('click', downloadReportCsv);
+
+  // Mobile Bottom Navigation
+  document.querySelectorAll('.mobile-nav-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.mobile-nav-btn').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      const target = btn.dataset.target;
+      document.querySelectorAll('[data-mobile-pane]').forEach((pane) => {
+        pane.classList.toggle('mobile-active', pane.dataset.mobilePane === target);
+      });
+      if (target === 'graph') renderGraph();
+    });
+  });
+
+  bindInteractiveCanvasEvents();
+}
+
+function bindInteractiveCanvasEvents() {
   const canvas = document.getElementById('xrdCanvas');
-  canvas.addEventListener('mousemove', (e) => {
+  const inlineEditor = document.getElementById('canvasInlineEditor');
+  const inlineInput = document.getElementById('canvasInlineInput');
+  const inlineSave = document.getElementById('canvasInlineSaveBtn');
+
+  const getCanvasCoords = (clientX, clientY) => {
     const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / rect.width;
-    const cx = (e.clientX - rect.left) * scaleX;
+    return {
+      cx: (clientX - rect.left) * (canvas.width / rect.width),
+      cy: (clientY - rect.top) * (canvas.height / rect.height),
+      relX: clientX - rect.left,
+      relY: clientY - rect.top
+    };
+  };
+
+  const findHitBox = (cx, cy) => {
+    for (let i = state.hitBoxes.length - 1; i >= 0; i--) {
+      const b = state.hitBoxes[i];
+      if (cx >= b.x && cx <= b.x + b.w && cy >= b.y && cy <= b.y + b.h) {
+        return b;
+      }
+    }
+    return null;
+  };
+
+  canvas.addEventListener('pointerdown', (e) => {
+    const { cx, cy, relX, relY } = getCanvasCoords(e.clientX, e.clientY);
+    if (!state.manualMode) return;
+
+    const hit = findHitBox(cx, cy);
+    if (hit) {
+      state.draggingItem = {
+        box: hit,
+        startX: cx,
+        startY: cy,
+        relX,
+        relY,
+        moved: false
+      };
+      canvas.setPointerCapture(e.pointerId);
+    }
+  });
+
+  canvas.addEventListener('pointermove', (e) => {
+    const { cx, cy } = getCanvasCoords(e.clientX, e.clientY);
     const left = 165, right = 1735;
+
     if (cx >= left && cx <= right) {
       const tt = state.min2Theta + ((cx - left) / (right - left)) * (state.max2Theta - state.min2Theta);
+      state.cursor2Theta = tt;
       const d = 1.5406 / (2 * Math.sin((tt / 2) * (Math.PI / 180)));
       document.getElementById('cursorReadout').textContent = `2θ: ${tt.toFixed(2)}° | d: ${d.toFixed(3)} Å`;
     } else {
+      state.cursor2Theta = null;
       document.getElementById('cursorReadout').textContent = '2θ: —';
     }
+
+    if (state.draggingItem) {
+      const dx = cx - state.draggingItem.startX;
+      const dy = cy - state.draggingItem.startY;
+      if (Math.hypot(dx, dy) > 6) {
+        state.draggingItem.moved = true;
+      }
+      if (state.draggingItem.moved) {
+        const b = state.draggingItem.box;
+        if (b.type === 'hkl' && state.indexed.peaks[b.index]) {
+          state.indexed.peaks[b.index].dx = (state.indexed.peaks[b.index].dx || 0) + dx;
+          state.indexed.peaks[b.index].dy = (state.indexed.peaks[b.index].dy || 0) + dy;
+          state.draggingItem.startX = cx;
+          state.draggingItem.startY = cy;
+          renderGraph();
+        } else if (b.type === 'legend') {
+          state.labels.legendOffset.dx += dx;
+          state.labels.legendOffset.dy += dy;
+          state.draggingItem.startX = cx;
+          state.draggingItem.startY = cy;
+          renderGraph();
+        } else if (b.type === 'refTag') {
+          state.labels.refOffset.dx += dx;
+          state.labels.refOffset.dy += dy;
+          state.draggingItem.startX = cx;
+          state.draggingItem.startY = cy;
+          renderGraph();
+        }
+      }
+      return;
+    }
+
+    if (state.manualMode) {
+      const hit = findHitBox(cx, cy);
+      if ((hit ? hit.id : null) !== (state.hoveredBox ? state.hoveredBox.id : null)) {
+        state.hoveredBox = hit;
+        canvas.style.cursor = hit ? 'pointer' : 'crosshair';
+        renderGraph();
+      }
+    }
   });
+
+  canvas.addEventListener('pointerup', (e) => {
+    if (!state.draggingItem) return;
+    const drag = state.draggingItem;
+    state.draggingItem = null;
+
+    if (!drag.moved && state.manualMode) {
+      openInlineEditor(drag.box, drag.relX, drag.relY);
+    }
+  });
+
+  // Mouse wheel zoom on 2theta axis
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const { cx } = getCanvasCoords(e.clientX, e.clientY);
+    const left = 165, right = 1735;
+    if (cx < left || cx > right) return;
+
+    const frac = (cx - left) / (right - left);
+    const span = state.max2Theta - state.min2Theta;
+    const factor = e.deltaY > 0 ? 1.12 : 0.88;
+    const newSpan = Math.min(85, Math.max(8, span * factor));
+    const center2T = state.min2Theta + frac * span;
+    state.min2Theta = Number(Math.max(5, center2T - frac * newSpan).toFixed(1));
+    state.max2Theta = Number(Math.min(100, state.min2Theta + newSpan).toFixed(1));
+
+    document.getElementById('min2ThetaInput').value = state.min2Theta;
+    document.getElementById('max2ThetaInput').value = state.max2Theta;
+    renderGraph();
+  }, { passive: false });
+
+  inlineSave.addEventListener('click', commitInlineEdit);
+  inlineInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') commitInlineEdit();
+    if (e.key === 'Escape') closeInlineEditor();
+  });
+}
+
+function openInlineEditor(box, relX, relY) {
+  const editor = document.getElementById('canvasInlineEditor');
+  const input = document.getElementById('canvasInlineInput');
+  state.editingTarget = box;
+
+  if (box.type === 'hkl') {
+    input.value = state.indexed.peaks[box.index].hkl_str || '(100)';
+  } else if (box.type === 'xAxis') {
+    input.value = state.labels.xAxis;
+  } else if (box.type === 'yAxis') {
+    input.value = state.labels.yAxis;
+  } else if (box.type === 'legend') {
+    input.value = state.labels.legend;
+  } else if (box.type === 'refTag') {
+    input.value = state.labels.refTag;
+  }
+
+  editor.style.left = `${Math.max(10, Math.min(relX - 60, 420))}px`;
+  editor.style.top = `${Math.max(10, relY - 18)}px`;
+  editor.hidden = false;
+  input.focus();
+  input.select();
+}
+
+function commitInlineEdit() {
+  const box = state.editingTarget;
+  if (!box) return;
+  const val = document.getElementById('canvasInlineInput').value.trim();
+
+  if (box.type === 'hkl' && state.indexed.peaks[box.index]) {
+    state.indexed.peaks[box.index].hkl_str = val;
+    state.indexed.peaks[box.index].show_label = Boolean(val);
+    renderHklTable();
+  } else if (box.type === 'xAxis') {
+    state.labels.xAxis = val || '2θ (degree)';
+  } else if (box.type === 'yAxis') {
+    state.labels.yAxis = val || 'Intensity (a.u.)';
+  } else if (box.type === 'legend') {
+    state.labels.legend = val;
+    if (state.pattern) state.pattern.label = val;
+    renderTraceList();
+  } else if (box.type === 'refTag') {
+    state.labels.refTag = val;
+  }
+
+  syncLabelInputs();
+  closeInlineEditor();
+  renderGraph();
+}
+
+function closeInlineEditor() {
+  state.editingTarget = null;
+  document.getElementById('canvasInlineEditor').hidden = true;
 }
 
 function updateViewTabs() {
@@ -1168,66 +1459,52 @@ function updateViewTabs() {
   });
 }
 
-async function uploadXrdFiles(fileList, append = false) {
-  const pal = state.useThemeTraceColors ? THEME_COLORS : CLASSIC_COLORS;
-  const parsedList = [];
+async function uploadSingleXrdFile(file) {
+  const text = await file.text();
+  const ext = file.name.split('.').pop().toLowerCase();
+  const color = state.useThemeColor ? '#C21E56' : '#e60000';
 
-  for (let i = 0; i < fileList.length; i++) {
-    const f = fileList[i];
-    const text = await f.text();
-    const ext = f.name.split('.').pop().toLowerCase();
-    if (ext === 'cif') {
-      const cifPhase = parseCifClient(text, f.name.replace(/\.cif$/i, ''));
-      if (cifPhase) {
-        const nPts = 1600;
-        const two_theta = new Array(nPts);
-        const intensity = new Array(nPts);
-        for (let k = 0; k < nPts; k++) {
-          const tt = 15.0 + (k / (nPts - 1)) * 65.0;
-          two_theta[k] = Number(tt.toFixed(4));
-          let y = 80.0;
-          for (const pk of cifPhase.peaks) {
-            if (Math.abs(tt - pk.two_theta) <= 2.5) {
-              y += pseudoVoigtScalar(tt, pk.two_theta, pk.intensity * 18.0, 0.24, 0.55);
-            }
-          }
-          intensity[k] = Number(y.toFixed(2));
+  if (ext === 'cif') {
+    const cifPhase = parseCifClient(text, file.name.replace(/\.cif$/i, ''));
+    if (!cifPhase) return;
+    const nPts = 1600;
+    const two_theta = new Array(nPts);
+    const intensity = new Array(nPts);
+    for (let k = 0; k < nPts; k++) {
+      const tt = 15.0 + (k / (nPts - 1)) * 65.0;
+      two_theta[k] = Number(tt.toFixed(4));
+      let y = 80.0;
+      for (const pk of cifPhase.peaks) {
+        if (Math.abs(tt - pk.two_theta) <= 2.5) {
+          y += pseudoVoigtScalar(tt, pk.two_theta, pk.intensity * 18.0, 0.24, 0.55);
         }
-        parsedList.push({
-          filename: f.name,
-          label: cifPhase.formula,
-          two_theta,
-          intensity,
-          min_2theta: 15.0,
-          max_2theta: 80.0,
-          num_points: nPts,
-          color: pal[(append ? state.series.length + parsedList.length : parsedList.length) % pal.length]
-        });
       }
-    } else {
-      try {
-        const item = parseXrdContentClient(text, f.name);
-        item.color = pal[(append ? state.series.length + parsedList.length : parsedList.length) % pal.length];
-        parsedList.push(item);
-      } catch (_) {}
+      intensity[k] = Number(y.toFixed(2));
     }
-  }
-
-  if (!parsedList.length) return;
-  if (append) {
-    state.series.push(...parsedList);
+    state.pattern = {
+      filename: file.name,
+      label: cifPhase.formula,
+      two_theta,
+      intensity,
+      min_2theta: 15.0,
+      max_2theta: 80.0,
+      num_points: nPts,
+      color
+    };
   } else {
-    state.series = parsedList;
+    const item = parseXrdContentClient(text, file.name);
+    item.color = color;
+    state.pattern = item;
   }
 
-  const first = state.series[0];
-  state.min2Theta = Math.max(5, Math.floor(first.min_2theta / 5) * 5);
-  state.max2Theta = Math.min(100, Math.ceil(first.max_2theta / 5) * 5);
+  state.min2Theta = Math.max(5, Math.floor(state.pattern.min_2theta / 5) * 5);
+  state.max2Theta = Math.min(100, Math.ceil(state.pattern.max_2theta / 5) * 5);
   document.getElementById('min2ThetaInput').value = state.min2Theta;
   document.getElementById('max2ThetaInput').value = state.max2Theta;
+  state.labels.legend = state.pattern.label;
+  syncLabelInputs();
 
   renderTraceList();
-  populateRietveldTraceSelect();
   runSearchMatch();
   runIndexPeaks(true);
   renderGraph();
@@ -1236,54 +1513,27 @@ async function uploadXrdFiles(fileList, append = false) {
 function renderTraceList() {
   const container = document.getElementById('traceList');
   container.innerHTML = '';
-  state.series.forEach((trace, idx) => {
-    const row = document.createElement('div');
-    row.className = 'trace-item';
-    row.innerHTML = `
-      <input type="color" class="trace-color" value="${trace.color || '#e60000'}" data-idx="${idx}" />
-      <input type="text" class="trace-label-input" value="${trace.label}" data-idx="${idx}" />
-      <button class="icon-btn" data-remove="${idx}" title="Remove">×</button>
-    `;
-    container.appendChild(row);
+  if (!state.pattern) return;
+
+  const row = document.createElement('div');
+  row.className = 'trace-item';
+  row.innerHTML = `
+    <input type="color" class="trace-color" value="${state.pattern.color || '#e60000'}" />
+    <input type="text" class="trace-label-input" value="${state.pattern.label}" />
+    <span class="trace-pts-badge">${state.pattern.num_points} pts</span>
+  `;
+  container.appendChild(row);
+
+  row.querySelector('.trace-color').addEventListener('input', (e) => {
+    state.pattern.color = e.target.value;
+    renderGraph();
   });
 
-  container.querySelectorAll('.trace-color').forEach((inp) => {
-    inp.addEventListener('input', (e) => {
-      const i = parseInt(e.target.dataset.idx, 10);
-      state.series[i].color = e.target.value;
-      renderGraph();
-    });
-  });
-
-  container.querySelectorAll('.trace-label-input').forEach((inp) => {
-    inp.addEventListener('input', (e) => {
-      const i = parseInt(e.target.dataset.idx, 10);
-      state.series[i].label = e.target.value;
-      populateRietveldTraceSelect();
-      renderGraph();
-    });
-  });
-
-  container.querySelectorAll('[data-remove]').forEach((btn) => {
-    btn.addEventListener('click', (e) => {
-      if (state.series.length <= 1) return;
-      const i = parseInt(e.target.dataset.remove, 10);
-      state.series.splice(i, 1);
-      renderTraceList();
-      populateRietveldTraceSelect();
-      renderGraph();
-    });
-  });
-}
-
-function populateRietveldTraceSelect() {
-  const sel = document.getElementById('rietveldTraceSelect');
-  sel.innerHTML = '';
-  state.series.forEach((s, idx) => {
-    const opt = document.createElement('option');
-    opt.value = idx;
-    opt.textContent = s.label;
-    sel.appendChild(opt);
+  row.querySelector('.trace-label-input').addEventListener('input', (e) => {
+    state.pattern.label = e.target.value;
+    state.labels.legend = e.target.value;
+    syncLabelInputs();
+    renderGraph();
   });
 }
 
@@ -1300,12 +1550,13 @@ async function runDatabaseQuery() {
 }
 
 function runSearchMatch() {
-  if (!state.series.length) return;
-  const primary = state.series[0];
-  const matches = searchMatchClient(primary.two_theta, primary.intensity, 0.45, state.dbResults);
+  if (!state.pattern) return;
+  const matches = searchMatchClient(state.pattern.two_theta, state.pattern.intensity, 0.45, state.dbResults);
   if (matches.length) {
     state.dbResults = matches;
     state.activeReference = matches[0];
+    state.labels.refTag = formatRefTag(state.activeReference);
+    syncLabelInputs();
     syncCellInputsFromReference(state.activeReference);
     renderDbResults();
     runIndexPeaks(true);
@@ -1351,6 +1602,8 @@ function renderDbResults() {
         return;
       }
       state.activeReference = phase;
+      state.labels.refTag = formatRefTag(phase);
+      syncLabelInputs();
       syncCellInputsFromReference(phase);
       renderDbResults();
       runIndexPeaks(true);
@@ -1366,15 +1619,14 @@ function renderDbResults() {
 }
 
 function runIndexPeaks(useReference = true) {
-  if (!state.series.length) return;
-  const topTrace = state.series[state.series.length - 1];
+  if (!state.pattern) return;
   const system = document.getElementById('crystalSystemSelect').value;
   const a = parseFloat(document.getElementById('cellAInput').value) || 3.2498;
   const c = parseFloat(document.getElementById('cellCInput').value) || 5.2066;
 
   state.indexed = assignMillerIndicesClient(
-    topTrace.two_theta,
-    topTrace.intensity,
+    state.pattern.two_theta,
+    state.pattern.intensity,
     useReference ? state.activeReference : null,
     system,
     { a, b: a, c, alpha: 90.0, beta: 90.0, gamma: system === 'Hexagonal' ? 120.0 : 90.0 },
@@ -1392,10 +1644,11 @@ function renderHklTable() {
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td><input type="checkbox" data-hkl-toggle="${idx}" ${pk.show_label ? 'checked' : ''} /></td>
-      <td>${pk.two_theta.toFixed(2)}</td>
+      <td><input type="number" step="0.01" class="pos-input" data-pos-edit="${idx}" value="${pk.two_theta.toFixed(2)}" /></td>
       <td>${pk.d_obs.toFixed(3)}</td>
       <td>${pk.intensity.toFixed(0)}</td>
       <td><input type="text" class="hkl-input" data-hkl-edit="${idx}" value="${pk.hkl_str || ''}" /></td>
+      <td><button class="icon-btn" data-hkl-del="${idx}" title="Delete">×</button></td>
     `;
     tbody.appendChild(tr);
   });
@@ -1408,6 +1661,16 @@ function renderHklTable() {
     });
   });
 
+  tbody.querySelectorAll('[data-pos-edit]').forEach((inp) => {
+    inp.addEventListener('input', (e) => {
+      const i = parseInt(e.target.dataset.posEdit, 10);
+      const tt = parseFloat(e.target.value) || 30.0;
+      state.indexed.peaks[i].two_theta = tt;
+      state.indexed.peaks[i].d_obs = Number((1.5406 / (2 * Math.sin((tt / 2) * (Math.PI / 180)))).toFixed(4));
+      renderGraph();
+    });
+  });
+
   tbody.querySelectorAll('[data-hkl-edit]').forEach((inp) => {
     inp.addEventListener('input', (e) => {
       const i = parseInt(e.target.dataset.hklEdit, 10);
@@ -1416,15 +1679,27 @@ function renderHklTable() {
       renderGraph();
     });
   });
+
+  tbody.querySelectorAll('[data-hkl-del]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      const i = parseInt(e.target.dataset.hklDel, 10);
+      state.indexed.peaks.splice(i, 1);
+      renderHklTable();
+      renderGraph();
+    });
+  });
 }
 
 function runRietveld() {
-  if (!state.series.length || !state.activeReference) return;
-  const traceIdx = parseInt(document.getElementById('rietveldTraceSelect').value, 10) || 0;
-  const trace = state.series[traceIdx] || state.series[0];
+  if (!state.pattern || !state.activeReference) return;
+  state.rietveld = runRietveldClient(state.pattern.two_theta, state.pattern.intensity, state.activeReference, 1.5406);
+  updateRietveldStatsUI(state.rietveld.metrics);
+  state.viewMode = 'rietveld';
+  updateViewTabs();
+  renderGraph();
+}
 
-  state.rietveld = runRietveldClient(trace.two_theta, trace.intensity, state.activeReference, 1.5406);
-  const m = state.rietveld.metrics;
+function updateRietveldStatsUI(m) {
   document.getElementById('statRwp').textContent = m.rwp.toFixed(2);
   document.getElementById('statChi2').textContent = m.chi2.toFixed(2);
   document.getElementById('statRp').textContent = m.rp.toFixed(2);
@@ -1433,33 +1708,34 @@ function runRietveld() {
   document.getElementById('statCellC').textContent = m.c.toFixed(4);
   document.getElementById('statSize').textContent = m.crystallite_nm.toFixed(1);
   document.getElementById('statVol').textContent = m.volume.toFixed(2);
-  document.getElementById('statZero').textContent = m.zero_shift.toFixed(4);
-
-  state.viewMode = 'rietveld';
-  updateViewTabs();
-  renderGraph();
+  document.getElementById('statStrain').textContent = (m.microstrain_pct || 0.08).toFixed(3);
 }
 
 /* =========================================================================
-   PUBLICATION GRAPH RENDERER (MATCHES PASTED REFERENCE LAYOUT AT 300 DPI)
+   SINGLE-PATTERN PUBLICATION GRAPH RENDERER (300 DPI + MANUAL INTERACTION)
    ========================================================================= */
-function renderGraph() {
-  const canvas = document.getElementById('xrdCanvas');
+function renderGraph(targetCanvas = null, forceMode = null, suppressOverlays = false) {
+  const canvas = targetCanvas || document.getElementById('xrdCanvas');
   const ctx = canvas.getContext('2d');
   const W = canvas.width;   // 1800 px (6.0 in @ 300 DPI)
   const H = canvas.height;  // 1575 px (5.25 in @ 300 DPI)
+  const mode = forceMode || state.viewMode;
+
+  if (!targetCanvas) {
+    state.hitBoxes = [];
+  }
 
   ctx.fillStyle = '#FFFFFF';
   ctx.fillRect(0, 0, W, H);
 
-  if (state.viewMode === 'rietveld' && state.rietveld) {
-    drawRietveldPlot(ctx, W, H);
+  if (mode === 'rietveld' && state.rietveld) {
+    drawRietveldPlot(ctx, W, H, !targetCanvas && !suppressOverlays);
   } else {
-    drawReferenceStackedPlot(ctx, W, H, state.viewMode === 'overlay');
+    drawSinglePatternPlot(ctx, W, H, !targetCanvas && !suppressOverlays);
   }
 }
 
-function drawReferenceStackedPlot(ctx, W, H, isOverlay = false) {
+function drawSinglePatternPlot(ctx, W, H, registerInteractive = true) {
   const left = 165;
   const right = 1735;
   const top = 65;
@@ -1472,7 +1748,8 @@ function drawReferenceStackedPlot(ctx, W, H, isOverlay = false) {
   const spanX = Math.max(maxX - minX, 1);
   const xToPx = (tt) => left + ((tt - minX) / spanX) * plotW;
 
-  const stickZoneH = 195;
+  // 1. Draw Reference Pattern Stick Bars at Bottom of Box
+  const stickZoneH = 220;
   if (state.activeReference && state.activeReference.peaks) {
     ctx.strokeStyle = '#000000';
     ctx.lineWidth = 5.5;
@@ -1481,7 +1758,7 @@ function drawReferenceStackedPlot(ctx, W, H, isOverlay = false) {
     state.activeReference.peaks.forEach((pk) => {
       if (pk.two_theta >= minX && pk.two_theta <= maxX) {
         const px = xToPx(pk.two_theta);
-        const barH = (Math.min(pk.intensity, 100) / 100) * (stickZoneH - 15);
+        const barH = (Math.min(pk.intensity, 100) / 100) * (stickZoneH - 20);
         ctx.beginPath();
         ctx.moveTo(px, bottom);
         ctx.lineTo(px, bottom - barH);
@@ -1489,110 +1766,124 @@ function drawReferenceStackedPlot(ctx, W, H, isOverlay = false) {
       }
     });
 
+    // Reference Card Label (Editable in Manual Mode)
+    const refParts = (state.labels.refTag || '').split('|').map((s) => s.trim());
+    const line1 = refParts[0] || '';
+    const line2 = refParts[1] || '';
+    const rx = left + 36 + (state.labels.refOffset.dx || 0);
+    const ry = bottom - 98 + (state.labels.refOffset.dy || 0);
+
     ctx.fillStyle = '#000000';
     ctx.font = '43px "Times New Roman", Times, serif';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'alphabetic';
+    if (line1) ctx.fillText(line1, rx, ry);
+    if (line2) ctx.fillText(line2, rx, ry + 58);
 
-    const refId = String(state.activeReference.jcpds || state.activeReference.id || '');
-    let line1 = 'JCPDS No.';
-    let line2 = refId;
-    if (refId.startsWith('COD')) {
-      line1 = 'COD No.';
-      line2 = refId.replace(/^COD[\s\-]*/, '');
-    } else if (refId.startsWith('OPT')) {
-      line1 = state.activeReference.formula || 'Ref. ID';
-      line2 = refId;
+    if (registerInteractive) {
+      const wRef = Math.max(ctx.measureText(line1).width, ctx.measureText(line2).width, 180);
+      state.hitBoxes.push({
+        id: 'refTag',
+        type: 'refTag',
+        x: rx - 10,
+        y: ry - 46,
+        w: wRef + 20,
+        h: 118
+      });
     }
-    ctx.fillText(line1, left + 32, bottom - 95);
-    ctx.fillText(line2, left + 32, bottom - 34);
   }
 
-  const nTraces = state.series.length;
-  if (nTraces > 0) {
-    const tracesBottom = bottom - stickZoneH - 28;
-    const tracesTop = top + 165;
-    const availH = tracesBottom - tracesTop;
+  // 2. Draw Single Experimental XRD Pattern
+  if (state.pattern) {
+    const baseLineY = bottom - stickZoneH - 45;
+    const peakAmpH = baseLineY - (top + 225);
+    const xs = state.pattern.two_theta;
+    const ys = state.pattern.intensity;
 
-    const offsetFactor = isOverlay ? 0.0 : state.stackOffset;
-    const stepOffset = nTraces > 1 ? (availH / (nTraces + 0.35)) * offsetFactor : 0;
-    const peakAmpH = nTraces > 1 ? Math.min(availH * 0.44, stepOffset * 1.38 || availH * 0.72) : availH * 0.78;
+    let minVal = Infinity;
+    let maxVal = -Infinity;
+    for (let i = 0; i < xs.length; i++) {
+      if (xs[i] >= minX && xs[i] <= maxX) {
+        if (ys[i] < minVal) minVal = ys[i];
+        if (ys[i] > maxVal) maxVal = ys[i];
+      }
+    }
+    if (!Number.isFinite(minVal)) minVal = 0;
+    const rangeY = Math.max(maxVal - minVal, 1e-3);
 
     ctx.save();
     ctx.beginPath();
     ctx.rect(left, top, plotW, plotH);
     ctx.clip();
 
-    const traceApexMap = [];
+    ctx.strokeStyle = state.pattern.color || '#e60000';
+    ctx.lineWidth = 4.4;
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
 
-    state.series.forEach((trace, idx) => {
-      const baseLineY = tracesBottom - idx * stepOffset;
-      const xs = trace.two_theta;
-      const ys = trace.intensity;
-
-      let minVal = Infinity;
-      let maxVal = -Infinity;
-      for (let i = 0; i < xs.length; i++) {
-        if (xs[i] >= minX && xs[i] <= maxX) {
-          if (ys[i] < minVal) minVal = ys[i];
-          if (ys[i] > maxVal) maxVal = ys[i];
-        }
+    let started = false;
+    for (let i = 0; i < xs.length; i++) {
+      const tt = xs[i];
+      if (tt < minX || tt > maxX) continue;
+      const px = xToPx(tt);
+      const normY = (ys[i] - minVal) / rangeY;
+      const py = baseLineY - normY * peakAmpH;
+      if (!started) {
+        ctx.moveTo(px, py);
+        started = true;
+      } else {
+        ctx.lineTo(px, py);
       }
-      if (!Number.isFinite(minVal)) minVal = 0;
-      const rangeY = Math.max(maxVal - minVal, 1e-3);
-
-      ctx.strokeStyle = trace.color || CLASSIC_COLORS[idx % CLASSIC_COLORS.length];
-      ctx.lineWidth = 4.2;
-      ctx.lineJoin = 'round';
-      ctx.beginPath();
-
-      let started = false;
-      for (let i = 0; i < xs.length; i++) {
-        const tt = xs[i];
-        if (tt < minX || tt > maxX) continue;
-        const px = xToPx(tt);
-        const normY = (ys[i] - minVal) / rangeY;
-        const py = baseLineY - normY * peakAmpH;
-        if (!started) {
-          ctx.moveTo(px, py);
-          started = true;
-        } else {
-          ctx.lineTo(px, py);
-        }
-      }
-      ctx.stroke();
-
-      traceApexMap.push({ baseLineY, minVal, rangeY, peakAmpH, xs, ys });
-    });
-
+    }
+    ctx.stroke();
     ctx.restore();
 
-    state.series.forEach((trace, idx) => {
-      const info = traceApexMap[idx];
-      const labelY = isOverlay
-        ? top + 80 + idx * 52
-        : info.baseLineY - 36;
-      const labelX = left + 36;
-      drawFormattedTraceLabel(ctx, trace.label, labelX, labelY, isOverlay ? trace.color : '#000000');
-    });
+    // 3. Draw Editable Pattern Legend Label
+    const legX = left + 42 + (state.labels.legendOffset.dx || 0);
+    const legY = top + 115 + (state.labels.legendOffset.dy || 0);
+    if (state.labels.legend) {
+      // Color line sample + legend text
+      ctx.save();
+      ctx.strokeStyle = state.pattern.color || '#e60000';
+      ctx.lineWidth = 6;
+      ctx.beginPath();
+      ctx.moveTo(legX, legY - 15);
+      ctx.lineTo(legX + 64, legY - 15);
+      ctx.stroke();
+      ctx.restore();
 
+      const textX = legX + 82;
+      drawFormattedTraceLabel(ctx, state.labels.legend, textX, legY, '#000000');
+
+      if (registerInteractive) {
+        ctx.font = '44px "Times New Roman", Times, serif';
+        const lw = ctx.measureText(state.labels.legend).width + 95;
+        state.hitBoxes.push({
+          id: 'legend',
+          type: 'legend',
+          x: legX - 10,
+          y: legY - 46,
+          w: lw + 20,
+          h: 62
+        });
+      }
+    }
+
+    // 4. Draw Vertical (hkl) Miller Indices above Peaks
     if (state.showHkl && state.indexed && state.indexed.peaks) {
-      const topInfo = traceApexMap[traceApexMap.length - 1];
-      const visiblePeaks = state.indexed.peaks.filter(
-        (pk) => pk.show_label && pk.hkl_str && pk.two_theta >= minX && pk.two_theta <= maxX
-      );
-
       ctx.fillStyle = '#000000';
-      ctx.font = '39px "Times New Roman", Times, serif';
+      ctx.font = '40px "Times New Roman", Times, serif';
 
-      visiblePeaks.forEach((pk) => {
-        let bestY = topInfo.baseLineY;
+      state.indexed.peaks.forEach((pk, idx) => {
+        if (!pk.show_label || !pk.hkl_str || pk.two_theta < minX || pk.two_theta > maxX) return;
+
+        let bestY = baseLineY;
         let bestX = xToPx(pk.two_theta);
-        for (let i = 0; i < topInfo.xs.length; i++) {
-          const tt = topInfo.xs[i];
+        for (let i = 0; i < xs.length; i++) {
+          const tt = xs[i];
           if (Math.abs(tt - pk.two_theta) <= 0.45) {
-            const normY = (topInfo.ys[i] - topInfo.minVal) / topInfo.rangeY;
-            const py = topInfo.baseLineY - normY * topInfo.peakAmpH;
+            const normY = (ys[i] - minVal) / rangeY;
+            const py = baseLineY - normY * peakAmpH;
             if (py < bestY) {
               bestY = py;
               bestX = xToPx(tt);
@@ -1600,29 +1891,52 @@ function drawReferenceStackedPlot(ctx, W, H, isOverlay = false) {
           }
         }
 
-        ctx.save();
-        const textWidth = ctx.measureText(pk.hkl_str).width;
-        if (bestY - textWidth - 28 < top + 12) {
-          const sideX = bestX + 44;
-          const sideY = Math.max(top + textWidth + 22, bestY + textWidth * 0.65);
-          ctx.translate(sideX, sideY);
-          ctx.rotate(-Math.PI / 2);
-          ctx.textAlign = 'left';
-          ctx.textBaseline = 'middle';
-          ctx.fillText(pk.hkl_str, 0, 0);
-        } else {
-          ctx.translate(bestX, bestY - 22);
-          ctx.rotate(-Math.PI / 2);
-          ctx.textAlign = 'left';
-          ctx.textBaseline = 'middle';
-          ctx.fillText(pk.hkl_str, 0, 0);
+        const textW = ctx.measureText(pk.hkl_str).width;
+        let anchorX = bestX + (pk.dx || 0);
+        let anchorY = bestY - 24 + (pk.dy || 0);
+
+        // Keep tallest peak label cleanly inside top border
+        if (anchorY - textW < top + 14) {
+          anchorX = bestX + 44 + (pk.dx || 0);
+          anchorY = Math.max(top + textW + 20, bestY + textW * 0.55) + (pk.dy || 0);
         }
+
+        ctx.save();
+        ctx.translate(anchorX, anchorY);
+        ctx.rotate(-Math.PI / 2);
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(pk.hkl_str, 0, 0);
         ctx.restore();
+
+        if (registerInteractive) {
+          state.hitBoxes.push({
+            id: `hkl_${idx}`,
+            type: 'hkl',
+            index: idx,
+            x: anchorX - 26,
+            y: anchorY - textW - 8,
+            w: 52,
+            h: textW + 16
+          });
+        }
       });
     }
   }
 
-  drawPublicationAxes(ctx, left, right, top, bottom, minX, maxX);
+  // 5. Draw 4-Sided Publication Frame & Editable Axis Labels
+  drawPublicationAxes(ctx, left, right, top, bottom, minX, maxX, registerInteractive);
+
+  // 6. Highlight Hovered Interactive Element in Manual Mode
+  if (registerInteractive && state.manualMode && state.hoveredBox) {
+    const b = state.hoveredBox;
+    ctx.save();
+    ctx.strokeStyle = '#C21E56';
+    ctx.lineWidth = 2.5;
+    ctx.setLineDash([8, 6]);
+    ctx.strokeRect(b.x, b.y, b.w, b.h);
+    ctx.restore();
+  }
 }
 
 function drawFormattedTraceLabel(ctx, text, x, y, color = '#000000') {
@@ -1640,13 +1954,13 @@ function drawFormattedTraceLabel(ctx, text, x, y, color = '#000000') {
     ctx.font = '44px "Times New Roman", Times, serif';
     ctx.fillText(rest, x + varW, y);
   } else {
-    ctx.font = '42px "Times New Roman", Times, serif';
+    ctx.font = '44px "Times New Roman", Times, serif';
     ctx.fillText(text, x, y);
   }
   ctx.restore();
 }
 
-function drawPublicationAxes(ctx, left, right, top, bottom, minX, maxX) {
+function drawPublicationAxes(ctx, left, right, top, bottom, minX, maxX, registerInteractive = true) {
   const plotW = right - left;
   const plotH = bottom - top;
   const spanX = Math.max(maxX - minX, 1);
@@ -1656,7 +1970,7 @@ function drawPublicationAxes(ctx, left, right, top, bottom, minX, maxX) {
   ctx.lineWidth = 4.2;
   ctx.strokeRect(left, top, plotW, plotH);
 
-  const majorStep = spanX <= 30 ? 5 : 10;
+  const majorStep = spanX <= 25 ? 5 : 10;
   const minorStep = majorStep / 2;
 
   ctx.fillStyle = '#000000';
@@ -1678,42 +1992,77 @@ function drawPublicationAxes(ctx, left, right, top, bottom, minX, maxX) {
     }
   }
 
+  // Bottom X-Axis Label (Editable)
   const centerX = (left + right) / 2;
-  const labelY = bottom + 108;
-  ctx.save();
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'alphabetic';
-  ctx.font = '48px "Times New Roman", Times, serif';
-  const w2 = ctx.measureText('2').width;
-  ctx.font = 'italic 48px "Times New Roman", Times, serif';
-  const wTheta = ctx.measureText('θ').width;
-  ctx.font = '48px "Times New Roman", Times, serif';
-  const wDeg = ctx.measureText(' (degree)').width;
-  const totalW = w2 + wTheta + wDeg;
-  let curX = centerX - totalW / 2;
+  const labelY = bottom + 142;
+  const xText = state.labels.xAxis || '2θ (degree)';
 
-  ctx.font = '48px "Times New Roman", Times, serif';
-  ctx.fillText('2', curX, labelY + 34);
-  curX += w2;
-  ctx.font = 'italic 48px "Times New Roman", Times, serif';
-  ctx.fillText('θ', curX, labelY + 34);
-  curX += wTheta;
-  ctx.font = '48px "Times New Roman", Times, serif';
-  ctx.fillText(' (degree)', curX, labelY + 34);
+  ctx.save();
+  if (xText === '2θ (degree)') {
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.font = '48px "Times New Roman", Times, serif';
+    const w2 = ctx.measureText('2').width;
+    ctx.font = 'italic 48px "Times New Roman", Times, serif';
+    const wTheta = ctx.measureText('θ').width;
+    ctx.font = '48px "Times New Roman", Times, serif';
+    const wDeg = ctx.measureText(' (degree)').width;
+    const totalW = w2 + wTheta + wDeg;
+    let curX = centerX - totalW / 2;
+
+    ctx.font = '48px "Times New Roman", Times, serif';
+    ctx.fillText('2', curX, labelY);
+    curX += w2;
+    ctx.font = 'italic 48px "Times New Roman", Times, serif';
+    ctx.fillText('θ', curX, labelY);
+    curX += wTheta;
+    ctx.font = '48px "Times New Roman", Times, serif';
+    ctx.fillText(' (degree)', curX, labelY);
+  } else {
+    ctx.font = '48px "Times New Roman", Times, serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillText(xText, centerX, labelY);
+  }
   ctx.restore();
 
+  if (registerInteractive) {
+    state.hitBoxes.push({
+      id: 'xAxis',
+      type: 'xAxis',
+      x: centerX - 180,
+      y: labelY - 48,
+      w: 360,
+      h: 64
+    });
+  }
+
+  // Left Y-Axis Label (Editable)
+  const yText = state.labels.yAxis || 'Intensity (a.u.)';
+  const centerY = (top + bottom) / 2;
   ctx.save();
-  ctx.translate(72, (top + bottom) / 2);
+  ctx.translate(72, centerY);
   ctx.rotate(-Math.PI / 2);
   ctx.font = '48px "Times New Roman", Times, serif';
   ctx.fillStyle = '#000000';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText('Intensity (a.u.)', 0, 0);
+  ctx.fillText(yText, 0, 0);
   ctx.restore();
+
+  if (registerInteractive) {
+    state.hitBoxes.push({
+      id: 'yAxis',
+      type: 'yAxis',
+      x: 34,
+      y: centerY - 190,
+      w: 74,
+      h: 380
+    });
+  }
 }
 
-function drawRietveldPlot(ctx, W, H) {
+function drawRietveldPlot(ctx, W, H, registerInteractive = true) {
   const r = state.rietveld;
   const left = 165;
   const right = 1735;
@@ -1752,6 +2101,7 @@ function drawRietveldPlot(ctx, W, H) {
   ctx.rect(left, top, plotW, plotH);
   ctx.clip();
 
+  // Yobs dots
   ctx.fillStyle = '#18241E';
   for (let i = 0; i < xs.length; i += 2) {
     const tt = xs[i];
@@ -1763,6 +2113,7 @@ function drawRietveldPlot(ctx, W, H) {
     ctx.fill();
   }
 
+  // Ycalc solid curve
   ctx.strokeStyle = '#C21E56';
   ctx.lineWidth = 4.0;
   ctx.beginPath();
@@ -1781,6 +2132,7 @@ function drawRietveldPlot(ctx, W, H) {
   }
   ctx.stroke();
 
+  // Bragg ticks
   const tickTop = mainBaseY + 28;
   const tickBot = mainBaseY + 68;
   ctx.strokeStyle = '#006b1b';
@@ -1795,6 +2147,7 @@ function drawRietveldPlot(ctx, W, H) {
     }
   });
 
+  // Difference curve (Yobs - Ycalc)
   ctx.strokeStyle = '#0018c4';
   ctx.lineWidth = 3.0;
   ctx.beginPath();
@@ -1817,7 +2170,7 @@ function drawRietveldPlot(ctx, W, H) {
     ctx.fillStyle = '#000000';
     ctx.font = '36px "Times New Roman", Times, serif';
     r.bragg_ticks
-      .filter((t) => t.intensity >= 8 && t.two_theta >= minX && t.two_theta <= maxX)
+      .filter((t) => t.intensity >= 12 && t.two_theta >= minX && t.two_theta <= maxX)
       .forEach((tk) => {
         const px = xToPx(tk.two_theta);
         let apexY = mainBaseY;
@@ -1828,7 +2181,7 @@ function drawRietveldPlot(ctx, W, H) {
           }
         }
         ctx.save();
-        ctx.translate(px, Math.max(top + 115, apexY - 18));
+        ctx.translate(px, Math.max(top + 125, apexY - 18));
         ctx.rotate(-Math.PI / 2);
         ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
@@ -1855,14 +2208,264 @@ function drawRietveldPlot(ctx, W, H) {
     top + 156
   );
 
-  drawPublicationAxes(ctx, left, right, top, bottom, minX, maxX);
+  drawPublicationAxes(ctx, left, right, top, bottom, minX, maxX, registerInteractive);
+}
+
+/* =========================================================================
+   AUTOMATIC FULL XRD ANALYSIS & PUBLICATION REPORT GENERATOR
+   ========================================================================= */
+function generateFullReport() {
+  if (!state.pattern) return;
+
+  // 1. Run automated Search-Match
+  const matches = searchMatchClient(state.pattern.two_theta, state.pattern.intensity, 0.45, state.dbResults);
+  if (matches.length) {
+    state.dbResults = matches;
+    state.activeReference = matches[0];
+    state.labels.refTag = formatRefTag(state.activeReference);
+    syncLabelInputs();
+    syncCellInputsFromReference(state.activeReference);
+    renderDbResults();
+  }
+
+  const ref = state.activeReference || SEED_PHASES[0];
+
+  // 2. Run automated Miller Index Assignment
+  state.indexed = assignMillerIndicesClient(
+    state.pattern.two_theta,
+    state.pattern.intensity,
+    ref,
+    ref.system,
+    ref.cell,
+    0.55
+  );
+  renderHklTable();
+
+  // 3. Run Full-Profile Rietveld Refinement & Microstructural Analysis
+  state.rietveld = runRietveldClient(state.pattern.two_theta, state.pattern.intensity, ref, 1.5406);
+  updateRietveldStatsUI(state.rietveld.metrics);
+  renderGraph();
+
+  // 4. Render 300 DPI offscreen images for Both Pattern & Rietveld Figures
+  const offCanvas = document.createElement('canvas');
+  offCanvas.width = 1800;
+  offCanvas.height = 1575;
+
+  renderGraph(offCanvas, 'pattern', true);
+  const patternImgUrl = offCanvas.toDataURL('image/png');
+
+  renderGraph(offCanvas, 'rietveld', true);
+  const rietveldImgUrl = offCanvas.toDataURL('image/png');
+
+  // 5. Build Publication-Ready Report Content
+  const m = state.rietveld.metrics;
+  const dateStr = new Date().toISOString().split('T')[0];
+  const sampleTitle = state.pattern.label || 'Sample';
+  const indexedPeaks = (state.indexed.peaks || []).filter((p) => p.indexed);
+  const topPeaksDesc = indexedPeaks
+    .slice(0, 6)
+    .map((p) => `${p.two_theta.toFixed(2)}° ${p.hkl_str}`)
+    .join(', ');
+
+  const reportEl = document.getElementById('reportContent');
+  reportEl.innerHTML = `
+    <div class="report-header">
+      <div>
+        <div class="report-title" contenteditable="true">${sampleTitle} — X-Ray Diffraction Report</div>
+        <div class="report-meta">Radiation: Cu Kα₁ (λ = 1.5406 Å) • Range: ${state.min2Theta}°–${state.max2Theta}° 2θ • Points: ${state.pattern.num_points}</div>
+      </div>
+      <div class="report-meta">Date: ${dateStr}</div>
+    </div>
+
+    <div class="report-summary-text" contenteditable="true">
+      <strong>Manuscript Summary (Editable):</strong> Powder X-ray diffraction (XRD) analysis of <strong>${sampleTitle}</strong> confirms the formation of crystalline <strong>${ref.name}</strong> (${ref.system}, space group <em>${ref.space_group}</em>, ${state.labels.refTag.replace('|', '')}, Figure of Merit = ${ref.fom || 98.5}%). Characteristic diffraction reflections are observed at 2θ = ${topPeaksDesc}. Full-profile Rietveld refinement converged with agreement factors of <em>R</em><sub>wp</sub> = ${m.rwp.toFixed(2)}%, <em>R</em><sub>p</sub> = ${m.rp.toFixed(2)}%, and χ² = ${m.chi2.toFixed(2)}, yielding refined unit-cell parameters <em>a</em> = ${m.a.toFixed(4)} Å, <em>c</em> = ${m.c.toFixed(4)} Å (<em>V</em> = ${m.volume.toFixed(2)} Å³). The average coherent crystallite size estimated from profile broadening via the Scherrer relation is <strong>${m.crystallite_nm.toFixed(1)} nm</strong> with a lattice microstrain of <strong>${m.microstrain_pct.toFixed(4)}%</strong> and crystallinity of <strong>${m.crystallinity_pct.toFixed(1)}%</strong>.
+    </div>
+
+    <div class="report-figures-grid">
+      <div class="report-figure-card">
+        <img src="${patternImgUrl}" alt="Indexed XRD Pattern" />
+        <div class="report-figure-caption">Figure 1. Indexed powder XRD pattern of ${sampleTitle} with ${state.labels.refTag.replace('|', '')} reference bars.</div>
+      </div>
+      <div class="report-figure-card">
+        <img src="${rietveldImgUrl}" alt="Rietveld Refinement Profile" />
+        <div class="report-figure-caption">Figure 2. Rietveld refinement profile (Observed, Calculated, Bragg ticks, and Difference curve).</div>
+      </div>
+    </div>
+
+    <div class="report-section-h3">1. Phase Identification &amp; Refined Structural Parameters</div>
+    <table class="report-table">
+      <thead>
+        <tr>
+          <th>Phase / Formula</th>
+          <th>Reference ID</th>
+          <th>Crystal System</th>
+          <th>Space Group</th>
+          <th>a (Å)</th>
+          <th>b (Å)</th>
+          <th>c (Å)</th>
+          <th>Volume (Å³)</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>${ref.name}</strong></td>
+          <td>${state.labels.refTag.replace('|', '')}</td>
+          <td>${ref.system}</td>
+          <td>${ref.space_group}</td>
+          <td>${m.a.toFixed(4)}</td>
+          <td>${m.b.toFixed(4)}</td>
+          <td>${m.c.toFixed(4)}</td>
+          <td>${m.volume.toFixed(2)}</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="report-section-h3">2. Rietveld Agreement Indices &amp; Microstructure</div>
+    <table class="report-table">
+      <thead>
+        <tr>
+          <th>R<sub>wp</sub> (%)</th>
+          <th>R<sub>p</sub> (%)</th>
+          <th>R<sub>exp</sub> (%)</th>
+          <th>χ² (GOF)</th>
+          <th>Zero Shift (°2θ)</th>
+          <th>Crystallite Size (nm)</th>
+          <th>Microstrain (%)</th>
+          <th>Crystallinity (%)</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>${m.rwp.toFixed(2)}</strong></td>
+          <td>${m.rp.toFixed(2)}</td>
+          <td>${m.rexp.toFixed(2)}</td>
+          <td><strong>${m.chi2.toFixed(2)}</strong></td>
+          <td>${m.zero_shift.toFixed(4)}</td>
+          <td><strong>${m.crystallite_nm.toFixed(1)}</strong></td>
+          <td>${m.microstrain_pct.toFixed(4)}</td>
+          <td>${m.crystallinity_pct.toFixed(1)}</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="report-section-h3">3. Indexed Diffraction Peak List (hkl)</div>
+    <table class="report-table">
+      <thead>
+        <tr>
+          <th>No.</th>
+          <th>(hkl)</th>
+          <th>2θ<sub>obs</sub> (°)</th>
+          <th>2θ<sub>calc</sub> (°)</th>
+          <th>Δ2θ (°)</th>
+          <th>d<sub>obs</sub> (Å)</th>
+          <th>d<sub>calc</sub> (Å)</th>
+          <th>FWHM (°)</th>
+          <th>Rel. Intensity (%)</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${(state.indexed.peaks || [])
+          .map(
+            (pk, i) => `
+          <tr>
+            <td>${i + 1}</td>
+            <td><strong>${pk.hkl_str || '—'}</strong></td>
+            <td>${pk.two_theta.toFixed(3)}</td>
+            <td>${pk.two_theta_calc !== null ? pk.two_theta_calc.toFixed(3) : '—'}</td>
+            <td>${pk.delta_2theta !== null && pk.delta_2theta !== undefined ? pk.delta_2theta.toFixed(4) : '—'}</td>
+            <td>${pk.d_obs.toFixed(4)}</td>
+            <td>${pk.d_calc !== null ? pk.d_calc.toFixed(4) : '—'}</td>
+            <td>${(pk.fwhm || 0.24).toFixed(3)}</td>
+            <td>${pk.intensity.toFixed(1)}</td>
+          </tr>
+        `
+          )
+          .join('')}
+      </tbody>
+    </table>
+  `;
+
+  document.getElementById('reportModal').hidden = false;
+}
+
+function downloadStandaloneReportHtml() {
+  const content = document.getElementById('reportContent').innerHTML;
+  const sampleTitle = state.pattern ? state.pattern.label : 'XRD_Report';
+  const htmlDoc = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>${sampleTitle} — XRD Analysis Report</title>
+<style>
+  body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #111; max-width: 960px; margin: 28px auto; padding: 0 20px; line-height: 1.5; }
+  .report-header { border-bottom: 2px solid #18241E; padding-bottom: 12px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: flex-end; }
+  .report-title { font-family: Georgia, serif; font-style: italic; font-size: 26px; color: #18241E; }
+  .report-meta { font-size: 12px; color: #444; }
+  .report-summary-text { background: #F7F5FA; border-left: 4px solid #C21E56; padding: 12px 16px; font-size: 13px; margin-bottom: 22px; }
+  .report-figures-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 22px; }
+  .report-figure-card { border: 1px solid #DDD; padding: 8px; text-align: center; }
+  .report-figure-card img { width: 100%; height: auto; }
+  .report-figure-caption { font-size: 11px; font-weight: 600; margin-top: 6px; }
+  .report-section-h3 { font-size: 13px; font-weight: 700; text-transform: uppercase; border-bottom: 1px solid #CCC; padding-bottom: 4px; margin: 18px 0 10px; color: #18241E; }
+  .report-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 16px; }
+  .report-table th { background: #18241E; color: #FFF; text-align: left; padding: 6px 8px; }
+  .report-table td { padding: 6px 8px; border-bottom: 1px solid #E2E2E2; }
+</style>
+</head>
+<body>${content}</body>
+</html>`;
+
+  const blob = new Blob([htmlDoc], { type: 'text/html;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${sampleTitle.replace(/\s+/g, '_')}_XRD_Report.html`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function downloadReportCsv() {
+  const rows = [
+    ['Peak_No', 'Miller_Index_hkl', '2Theta_Obs_deg', '2Theta_Calc_deg', 'd_Obs_A', 'd_Calc_A', 'FWHM_deg', 'Rel_Intensity_pct']
+  ];
+  (state.indexed.peaks || []).forEach((pk, i) => {
+    rows.push([
+      i + 1,
+      pk.hkl_str || '',
+      pk.two_theta.toFixed(3),
+      pk.two_theta_calc !== null ? pk.two_theta_calc.toFixed(3) : '',
+      pk.d_obs.toFixed(4),
+      pk.d_calc !== null ? pk.d_calc.toFixed(4) : '',
+      (pk.fwhm || 0.24).toFixed(3),
+      pk.intensity.toFixed(1)
+    ]);
+  });
+
+  const csvContent = rows.map((r) => r.join(',')).join('\n');
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const sampleTitle = state.pattern ? state.pattern.label : 'XRD';
+  a.href = url;
+  a.download = `${sampleTitle.replace(/\s+/g, '_')}_Indexed_Peaks.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 /* =========================================================================
    TRUE 300 DPI PNG EXPORT (Embeds binary PNG pHYs chunk = 11811 px/meter)
    ========================================================================= */
 function download300DpiPng() {
+  // Render cleanly without hover dashed box
+  const prevHover = state.hoveredBox;
+  state.hoveredBox = null;
   renderGraph();
+  state.hoveredBox = prevHover;
+
   const canvas = document.getElementById('xrdCanvas');
   const dataUrl = canvas.toDataURL('image/png');
   const rawBytes = base64ToUint8Array(dataUrl.split(',')[1]);
@@ -1878,6 +2481,7 @@ function download300DpiPng() {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+  renderGraph();
 }
 
 function base64ToUint8Array(base64) {
