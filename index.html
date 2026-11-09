@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Diffracta — XRD Analysis</title>
+  <link rel="icon" type="image/svg+xml" href="static/favicon.svg" />
+  <link rel="stylesheet" href="static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-title">Diffracta</span>
+      <span class="brand-tag">XRD</span>
+    </div>
+
+    <div class="topbar-actions">
+      <select id="presetSelect" class="select" style="width: 155px;">
+        <option value="zno">ZnO Series (x = 0–0.2)</option>
+        <option value="tio2">TiO₂ Anatase</option>
+        <option value="batio3">BaTiO₃ Perovskite</option>
+        <option value="silicon">Si NIST 640d</option>
+        <option value="al2o3">α-Al₂O₃ Corundum</option>
+      </select>
+
+      <label class="btn" for="fileUploadInput">
+        + Upload XRD
+      </label>
+      <input id="fileUploadInput" type="file" multiple accept=".xy,.csv,.txt,.dat,.xrdml,.cif" hidden />
+
+      <button id="downloadPngBtn" class="btn btn-rose">300 DPI PNG</button>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <!-- Left Panel: Spectra & Connected Databases -->
+    <aside class="panel">
+      <div class="panel-scroll">
+        <!-- Uploaded / Active Spectra -->
+        <section class="section-block">
+          <div class="section-header">
+            <h2 class="section-title">Spectra</h2>
+            <div style="display:flex; gap:4px;">
+              <button id="paletteToggleBtn" class="btn btn-sm">Theme Colors</button>
+              <label class="btn btn-sm" for="appendUploadInput">+ Add</label>
+              <input id="appendUploadInput" type="file" multiple accept=".xy,.csv,.txt,.dat,.xrdml,.cif" hidden />
+            </div>
+          </div>
+          <div id="traceList" class="trace-list"></div>
+        </section>
+
+        <!-- Database Connection & Search-Match -->
+        <section class="section-block">
+          <div class="section-header">
+            <h2 class="section-title">Databases</h2>
+            <div style="display:flex; gap:4px;">
+              <button id="searchMatchBtn" class="btn btn-sm btn-chive">Auto Match</button>
+              <label class="btn btn-sm" for="dbUploadInput">+ CIF</label>
+              <input id="dbUploadInput" type="file" multiple accept=".cif,.json" hidden />
+            </div>
+          </div>
+
+          <div id="dbFolderPath" class="folder-tag">database/ (16 Cards + COD / OPTIMADE)</div>
+
+          <div class="source-pills">
+            <button class="pill-btn active" data-source="all">All</button>
+            <button class="pill-btn" data-source="local">Local</button>
+            <button class="pill-btn" data-source="cod">COD</button>
+            <button class="pill-btn" data-source="optimade">OPTIMADE</button>
+          </div>
+
+          <div class="db-filter-row">
+            <input id="dbSearchInput" class="input" type="text" placeholder="ZnO, TiO2, 036-1451, COD ID..." />
+            <button id="dbSearchBtn" class="btn btn-sm btn-rose">Query</button>
+          </div>
+
+          <div id="dbResultsList" class="db-results"></div>
+        </section>
+      </div>
+    </aside>
+
+    <!-- Center Stage: Reference Graph Layout -->
+    <section class="stage">
+      <div class="stage-toolbar">
+        <div class="toolbar-group">
+          <div class="tabs" style="width: 210px;">
+            <button class="tab-btn active" data-view="stacked">Stacked</button>
+            <button class="tab-btn" data-view="rietveld">Rietveld</button>
+            <button class="tab-btn" data-view="overlay">Overlay</button>
+          </div>
+
+          <div class="compact-field">
+            <span>2θ</span>
+            <input id="min2ThetaInput" class="input" type="number" value="20" step="5" />
+            <span>–</span>
+            <input id="max2ThetaInput" class="input" type="number" value="70" step="5" />
+          </div>
+
+          <div class="compact-field">
+            <span>Offset</span>
+            <input id="stackOffsetInput" class="input" type="number" value="1.0" step="0.1" min="0.2" max="2.5" />
+          </div>
+        </div>
+
+        <div class="toolbar-group">
+          <button id="toggleHklBtn" class="btn btn-sm">(hkl) On</button>
+          <span id="cursorReadout" class="cursor-readout">2θ: —</span>
+        </div>
+      </div>
+
+      <div class="canvas-viewport">
+        <div class="graph-frame">
+          <canvas id="xrdCanvas" width="1800" height="1575"></canvas>
+        </div>
+      </div>
+    </section>
+
+    <!-- Right Panel: Miller Indices & Rietveld Refinement -->
+    <aside class="panel panel-right">
+      <div class="panel-scroll">
+        <!-- Miller Indices Assignment -->
+        <section class="section-block">
+          <div class="section-header">
+            <h2 class="section-title">Miller Indices</h2>
+            <button id="assignHklBtn" class="btn btn-sm btn-chive">Assign (hkl)</button>
+          </div>
+
+          <div class="grid-3">
+            <select id="crystalSystemSelect" class="select">
+              <option value="Hexagonal">Hexagonal</option>
+              <option value="Cubic">Cubic</option>
+              <option value="Tetragonal">Tetragonal</option>
+              <option value="Orthorhombic">Orthorhombic</option>
+              <option value="Monoclinic">Monoclinic</option>
+            </select>
+            <input id="cellAInput" class="input" type="number" step="0.001" value="3.2498" title="a (Å)" />
+            <input id="cellCInput" class="input" type="number" step="0.001" value="5.2066" title="c (Å)" />
+          </div>
+
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>✓</th>
+                  <th>2θ (°)</th>
+                  <th>d (Å)</th>
+                  <th>I (%)</th>
+                  <th>(hkl)</th>
+                </tr>
+              </thead>
+              <tbody id="hklTableBody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- Rietveld Refinement -->
+        <section class="section-block">
+          <div class="section-header">
+            <h2 class="section-title">Rietveld</h2>
+            <div style="display:flex; gap:5px; align-items:center;">
+              <select id="rietveldTraceSelect" class="select" style="width:92px; padding:3px 6px; font-size:11px;"></select>
+              <button id="runRietveldBtn" class="btn btn-sm btn-rose">Refine</button>
+            </div>
+          </div>
+
+          <div class="grid-2">
+            <div class="stat-box accent">
+              <span class="stat-label">Rwp (%)</span>
+              <span id="statRwp" class="stat-value">—</span>
+            </div>
+            <div class="stat-box accent">
+              <span class="stat-label">χ² (GOF)</span>
+              <span id="statChi2" class="stat-value">—</span>
+            </div>
+            <div class="stat-box">
+              <span class="stat-label">Rp (%)</span>
+              <span id="statRp" class="stat-value">—</span>
+            </div>
+            <div class="stat-box">
+              <span class="stat-label">Rexp (%)</span>
+              <span id="statRexp" class="stat-value">—</span>
+            </div>
+          </div>
+
+          <div class="grid-3">
+            <div class="stat-box">
+              <span class="stat-label">a (Å)</span>
+              <span id="statCellA" class="stat-value">—</span>
+            </div>
+            <div class="stat-box">
+              <span class="stat-label">c (Å)</span>
+              <span id="statCellC" class="stat-value">—</span>
+            </div>
+            <div class="stat-box">
+              <span class="stat-label">Size (nm)</span>
+              <span id="statSize" class="stat-value">—</span>
+            </div>
+          </div>
+
+          <div class="grid-2">
+            <div class="stat-box">
+              <span class="stat-label">Volume (Å³)</span>
+              <span id="statVol" class="stat-value">—</span>
+            </div>
+            <div class="stat-box">
+              <span class="stat-label">Zero (°2θ)</span>
+              <span id="statZero" class="stat-value">—</span>
+            </div>
+          </div>
+        </section>
+      </div>
+    </aside>
+  </main>
+
+  <script src="static/app.js"></script>
+</body>
+</html>
