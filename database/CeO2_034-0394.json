@@ -1,0 +1,79 @@
+{
+  "id": "034-0394",
+  "jcpds": "034-0394",
+  "cod_id": "9009008",
+  "name": "Cerianite (CeO2)",
+  "formula": "CeO2",
+  "system": "Cubic",
+  "space_group": "Fm-3m",
+  "cell": {
+    "a": 5.4113,
+    "b": 5.4113,
+    "c": 5.4113,
+    "alpha": 90.0,
+    "beta": 90.0,
+    "gamma": 90.0
+  },
+  "peaks": [
+    {
+      "two_theta": 28.55,
+      "intensity": 100.0,
+      "hkl": [
+        1,
+        1,
+        1
+      ],
+      "d": 3.1242
+    },
+    {
+      "two_theta": 33.08,
+      "intensity": 30.0,
+      "hkl": [
+        2,
+        0,
+        0
+      ],
+      "d": 2.7057
+    },
+    {
+      "two_theta": 47.48,
+      "intensity": 51.0,
+      "hkl": [
+        2,
+        2,
+        0
+      ],
+      "d": 1.9132
+    },
+    {
+      "two_theta": 56.34,
+      "intensity": 42.0,
+      "hkl": [
+        3,
+        1,
+        1
+      ],
+      "d": 1.6316
+    },
+    {
+      "two_theta": 59.09,
+      "intensity": 8.0,
+      "hkl": [
+        2,
+        2,
+        2
+      ],
+      "d": 1.5621
+    },
+    {
+      "two_theta": 69.41,
+      "intensity": 8.0,
+      "hkl": [
+        4,
+        0,
+        0
+      ],
+      "d": 1.3528
+    }
+  ]
+}

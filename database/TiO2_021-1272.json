@@ -1,0 +1,119 @@
+{
+  "id": "021-1272",
+  "jcpds": "021-1272",
+  "cod_id": "9009086",
+  "name": "Anatase (TiO2)",
+  "formula": "TiO2",
+  "system": "Tetragonal",
+  "space_group": "I41/amd",
+  "cell": {
+    "a": 3.7852,
+    "b": 3.7852,
+    "c": 9.5139,
+    "alpha": 90.0,
+    "beta": 90.0,
+    "gamma": 90.0
+  },
+  "peaks": [
+    {
+      "two_theta": 25.28,
+      "intensity": 100.0,
+      "hkl": [
+        1,
+        0,
+        1
+      ],
+      "d": 3.52
+    },
+    {
+      "two_theta": 36.95,
+      "intensity": 10.0,
+      "hkl": [
+        1,
+        0,
+        3
+      ],
+      "d": 2.431
+    },
+    {
+      "two_theta": 37.8,
+      "intensity": 20.0,
+      "hkl": [
+        0,
+        0,
+        4
+      ],
+      "d": 2.378
+    },
+    {
+      "two_theta": 38.58,
+      "intensity": 8.0,
+      "hkl": [
+        1,
+        1,
+        2
+      ],
+      "d": 2.332
+    },
+    {
+      "two_theta": 48.05,
+      "intensity": 35.0,
+      "hkl": [
+        2,
+        0,
+        0
+      ],
+      "d": 1.892
+    },
+    {
+      "two_theta": 53.89,
+      "intensity": 20.0,
+      "hkl": [
+        1,
+        0,
+        5
+      ],
+      "d": 1.6999
+    },
+    {
+      "two_theta": 55.06,
+      "intensity": 20.0,
+      "hkl": [
+        2,
+        1,
+        1
+      ],
+      "d": 1.6665
+    },
+    {
+      "two_theta": 62.69,
+      "intensity": 14.0,
+      "hkl": [
+        2,
+        0,
+        4
+      ],
+      "d": 1.4808
+    },
+    {
+      "two_theta": 68.76,
+      "intensity": 6.0,
+      "hkl": [
+        1,
+        1,
+        6
+      ],
+      "d": 1.3641
+    },
+    {
+      "two_theta": 70.31,
+      "intensity": 6.0,
+      "hkl": [
+        2,
+        2,
+        0
+      ],
+      "d": 1.3378
+    }
+  ]
+}

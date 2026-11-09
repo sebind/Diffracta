@@ -1,0 +1,59 @@
+{
+  "id": "004-0783",
+  "jcpds": "004-0783",
+  "cod_id": "9008459",
+  "name": "Silver (Ag)",
+  "formula": "Ag",
+  "system": "Cubic",
+  "space_group": "Fm-3m",
+  "cell": {
+    "a": 4.0862,
+    "b": 4.0862,
+    "c": 4.0862,
+    "alpha": 90.0,
+    "beta": 90.0,
+    "gamma": 90.0
+  },
+  "peaks": [
+    {
+      "two_theta": 38.12,
+      "intensity": 100.0,
+      "hkl": [
+        1,
+        1,
+        1
+      ],
+      "d": 2.3592
+    },
+    {
+      "two_theta": 44.28,
+      "intensity": 40.0,
+      "hkl": [
+        2,
+        0,
+        0
+      ],
+      "d": 2.0431
+    },
+    {
+      "two_theta": 64.43,
+      "intensity": 25.0,
+      "hkl": [
+        2,
+        2,
+        0
+      ],
+      "d": 1.4447
+    },
+    {
+      "two_theta": 77.47,
+      "intensity": 26.0,
+      "hkl": [
+        3,
+        1,
+        1
+      ],
+      "d": 1.232
+    }
+  ]
+}

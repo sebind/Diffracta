@@ -1,0 +1,11 @@
+data_046-1045
+_chemical_name_mineral 'Quartz (alpha-SiO2)'
+_chemical_formula_sum 'SiO2'
+_symmetry_space_group_name_H-M 'P3221'
+_cell_length_a 4.9134
+_cell_length_b 4.9134
+_cell_length_c 5.4052
+_cell_angle_alpha 90.00
+_cell_angle_beta 90.00
+_cell_angle_gamma 120.00
+# JCPDS 046-1045 | COD 9012600

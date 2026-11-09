@@ -1,0 +1,129 @@
+{
+  "id": "036-1451",
+  "jcpds": "036-1451",
+  "cod_id": "2300450",
+  "name": "Zincite (ZnO)",
+  "formula": "ZnO",
+  "system": "Hexagonal",
+  "space_group": "P63mc",
+  "cell": {
+    "a": 3.2498,
+    "b": 3.2498,
+    "c": 5.2066,
+    "alpha": 90.0,
+    "beta": 90.0,
+    "gamma": 120.0
+  },
+  "peaks": [
+    {
+      "two_theta": 31.77,
+      "intensity": 57.0,
+      "hkl": [
+        1,
+        0,
+        0
+      ],
+      "d": 2.8143
+    },
+    {
+      "two_theta": 34.42,
+      "intensity": 44.0,
+      "hkl": [
+        0,
+        0,
+        2
+      ],
+      "d": 2.6033
+    },
+    {
+      "two_theta": 36.25,
+      "intensity": 100.0,
+      "hkl": [
+        1,
+        0,
+        1
+      ],
+      "d": 2.4759
+    },
+    {
+      "two_theta": 47.54,
+      "intensity": 23.0,
+      "hkl": [
+        1,
+        0,
+        2
+      ],
+      "d": 1.9111
+    },
+    {
+      "two_theta": 56.6,
+      "intensity": 32.0,
+      "hkl": [
+        1,
+        1,
+        0
+      ],
+      "d": 1.6249
+    },
+    {
+      "two_theta": 62.86,
+      "intensity": 29.0,
+      "hkl": [
+        1,
+        0,
+        3
+      ],
+      "d": 1.4772
+    },
+    {
+      "two_theta": 66.38,
+      "intensity": 4.0,
+      "hkl": [
+        2,
+        0,
+        0
+      ],
+      "d": 1.4072
+    },
+    {
+      "two_theta": 67.96,
+      "intensity": 23.0,
+      "hkl": [
+        1,
+        1,
+        2
+      ],
+      "d": 1.3782
+    },
+    {
+      "two_theta": 69.1,
+      "intensity": 11.0,
+      "hkl": [
+        2,
+        0,
+        1
+      ],
+      "d": 1.3583
+    },
+    {
+      "two_theta": 72.56,
+      "intensity": 2.0,
+      "hkl": [
+        0,
+        0,
+        4
+      ],
+      "d": 1.3017
+    },
+    {
+      "two_theta": 76.96,
+      "intensity": 4.0,
+      "hkl": [
+        2,
+        0,
+        2
+      ],
+      "d": 1.238
+    }
+  ]
+}

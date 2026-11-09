@@ -1,0 +1,119 @@
+{
+  "id": "021-1276",
+  "jcpds": "021-1276",
+  "cod_id": "9004141",
+  "name": "Rutile (TiO2)",
+  "formula": "TiO2",
+  "system": "Tetragonal",
+  "space_group": "P42/mnm",
+  "cell": {
+    "a": 4.5933,
+    "b": 4.5933,
+    "c": 2.9592,
+    "alpha": 90.0,
+    "beta": 90.0,
+    "gamma": 90.0
+  },
+  "peaks": [
+    {
+      "two_theta": 27.45,
+      "intensity": 100.0,
+      "hkl": [
+        1,
+        1,
+        0
+      ],
+      "d": 3.247
+    },
+    {
+      "two_theta": 36.09,
+      "intensity": 50.0,
+      "hkl": [
+        1,
+        0,
+        1
+      ],
+      "d": 2.487
+    },
+    {
+      "two_theta": 39.19,
+      "intensity": 8.0,
+      "hkl": [
+        2,
+        0,
+        0
+      ],
+      "d": 2.297
+    },
+    {
+      "two_theta": 41.23,
+      "intensity": 25.0,
+      "hkl": [
+        1,
+        1,
+        1
+      ],
+      "d": 2.188
+    },
+    {
+      "two_theta": 44.05,
+      "intensity": 10.0,
+      "hkl": [
+        2,
+        1,
+        0
+      ],
+      "d": 2.054
+    },
+    {
+      "two_theta": 54.32,
+      "intensity": 60.0,
+      "hkl": [
+        2,
+        1,
+        1
+      ],
+      "d": 1.6874
+    },
+    {
+      "two_theta": 56.64,
+      "intensity": 20.0,
+      "hkl": [
+        2,
+        2,
+        0
+      ],
+      "d": 1.6237
+    },
+    {
+      "two_theta": 62.74,
+      "intensity": 10.0,
+      "hkl": [
+        0,
+        0,
+        2
+      ],
+      "d": 1.4797
+    },
+    {
+      "two_theta": 64.04,
+      "intensity": 10.0,
+      "hkl": [
+        3,
+        1,
+        0
+      ],
+      "d": 1.4528
+    },
+    {
+      "two_theta": 69.01,
+      "intensity": 20.0,
+      "hkl": [
+        3,
+        0,
+        1
+      ],
+      "d": 1.3598
+    }
+  ]
+}

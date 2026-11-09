@@ -1,0 +1,49 @@
+{
+  "id": "004-0836",
+  "jcpds": "004-0836",
+  "cod_id": "9013014",
+  "name": "Copper (Cu)",
+  "formula": "Cu",
+  "system": "Cubic",
+  "space_group": "Fm-3m",
+  "cell": {
+    "a": 3.615,
+    "b": 3.615,
+    "c": 3.615,
+    "alpha": 90.0,
+    "beta": 90.0,
+    "gamma": 90.0
+  },
+  "peaks": [
+    {
+      "two_theta": 43.3,
+      "intensity": 100.0,
+      "hkl": [
+        1,
+        1,
+        1
+      ],
+      "d": 2.0871
+    },
+    {
+      "two_theta": 50.43,
+      "intensity": 46.0,
+      "hkl": [
+        2,
+        0,
+        0
+      ],
+      "d": 1.8075
+    },
+    {
+      "two_theta": 74.13,
+      "intensity": 20.0,
+      "hkl": [
+        2,
+        2,
+        0
+      ],
+      "d": 1.2781
+    }
+  ]
+}

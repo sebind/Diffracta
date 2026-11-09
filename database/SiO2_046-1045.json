@@ -1,0 +1,99 @@
+{
+  "id": "046-1045",
+  "jcpds": "046-1045",
+  "cod_id": "9012600",
+  "name": "Quartz (alpha-SiO2)",
+  "formula": "SiO2",
+  "system": "Hexagonal",
+  "space_group": "P3221",
+  "cell": {
+    "a": 4.9134,
+    "b": 4.9134,
+    "c": 5.4052,
+    "alpha": 90.0,
+    "beta": 90.0,
+    "gamma": 120.0
+  },
+  "peaks": [
+    {
+      "two_theta": 20.86,
+      "intensity": 22.0,
+      "hkl": [
+        1,
+        0,
+        0
+      ],
+      "d": 4.255
+    },
+    {
+      "two_theta": 26.64,
+      "intensity": 100.0,
+      "hkl": [
+        1,
+        0,
+        1
+      ],
+      "d": 3.3435
+    },
+    {
+      "two_theta": 36.54,
+      "intensity": 8.0,
+      "hkl": [
+        1,
+        1,
+        0
+      ],
+      "d": 2.4567
+    },
+    {
+      "two_theta": 39.47,
+      "intensity": 7.0,
+      "hkl": [
+        1,
+        0,
+        2
+      ],
+      "d": 2.2814
+    },
+    {
+      "two_theta": 42.45,
+      "intensity": 6.0,
+      "hkl": [
+        2,
+        0,
+        0
+      ],
+      "d": 2.1277
+    },
+    {
+      "two_theta": 50.14,
+      "intensity": 14.0,
+      "hkl": [
+        1,
+        1,
+        2
+      ],
+      "d": 1.8179
+    },
+    {
+      "two_theta": 59.96,
+      "intensity": 9.0,
+      "hkl": [
+        2,
+        1,
+        1
+      ],
+      "d": 1.5415
+    },
+    {
+      "two_theta": 68.14,
+      "intensity": 7.0,
+      "hkl": [
+        2,
+        0,
+        3
+      ],
+      "d": 1.375
+    }
+  ]
+}

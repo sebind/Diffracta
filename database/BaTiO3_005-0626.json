@@ -1,0 +1,89 @@
+{
+  "id": "005-0626",
+  "jcpds": "005-0626",
+  "cod_id": "1507756",
+  "name": "Barium Titanate (BaTiO3)",
+  "formula": "BaTiO3",
+  "system": "Tetragonal",
+  "space_group": "P4mm",
+  "cell": {
+    "a": 3.994,
+    "b": 3.994,
+    "c": 4.038,
+    "alpha": 90.0,
+    "beta": 90.0,
+    "gamma": 90.0
+  },
+  "peaks": [
+    {
+      "two_theta": 22.24,
+      "intensity": 25.0,
+      "hkl": [
+        1,
+        0,
+        0
+      ],
+      "d": 3.994
+    },
+    {
+      "two_theta": 31.5,
+      "intensity": 100.0,
+      "hkl": [
+        1,
+        0,
+        1
+      ],
+      "d": 2.838
+    },
+    {
+      "two_theta": 38.89,
+      "intensity": 25.0,
+      "hkl": [
+        1,
+        1,
+        1
+      ],
+      "d": 2.314
+    },
+    {
+      "two_theta": 45.24,
+      "intensity": 35.0,
+      "hkl": [
+        2,
+        0,
+        0
+      ],
+      "d": 1.997
+    },
+    {
+      "two_theta": 50.92,
+      "intensity": 12.0,
+      "hkl": [
+        2,
+        0,
+        1
+      ],
+      "d": 1.792
+    },
+    {
+      "two_theta": 56.18,
+      "intensity": 35.0,
+      "hkl": [
+        2,
+        1,
+        1
+      ],
+      "d": 1.636
+    },
+    {
+      "two_theta": 65.85,
+      "intensity": 20.0,
+      "hkl": [
+        2,
+        2,
+        0
+      ],
+      "d": 1.417
+    }
+  ]
+}

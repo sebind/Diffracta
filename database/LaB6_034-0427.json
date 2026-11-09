@@ -1,0 +1,99 @@
+{
+  "id": "034-0427",
+  "jcpds": "034-0427",
+  "cod_id": "1000057",
+  "name": "Lanthanum Hexaboride (LaB6 NIST 660c)",
+  "formula": "LaB6",
+  "system": "Cubic",
+  "space_group": "Pm-3m",
+  "cell": {
+    "a": 4.1569,
+    "b": 4.1569,
+    "c": 4.1569,
+    "alpha": 90.0,
+    "beta": 90.0,
+    "gamma": 90.0
+  },
+  "peaks": [
+    {
+      "two_theta": 21.36,
+      "intensity": 58.0,
+      "hkl": [
+        1,
+        0,
+        0
+      ],
+      "d": 4.1569
+    },
+    {
+      "two_theta": 30.38,
+      "intensity": 100.0,
+      "hkl": [
+        1,
+        1,
+        0
+      ],
+      "d": 2.9394
+    },
+    {
+      "two_theta": 37.44,
+      "intensity": 46.0,
+      "hkl": [
+        1,
+        1,
+        1
+      ],
+      "d": 2.4
+    },
+    {
+      "two_theta": 43.51,
+      "intensity": 28.0,
+      "hkl": [
+        2,
+        0,
+        0
+      ],
+      "d": 2.0785
+    },
+    {
+      "two_theta": 48.96,
+      "intensity": 48.0,
+      "hkl": [
+        2,
+        1,
+        0
+      ],
+      "d": 1.859
+    },
+    {
+      "two_theta": 53.99,
+      "intensity": 29.0,
+      "hkl": [
+        2,
+        1,
+        1
+      ],
+      "d": 1.697
+    },
+    {
+      "two_theta": 63.22,
+      "intensity": 14.0,
+      "hkl": [
+        2,
+        2,
+        0
+      ],
+      "d": 1.4697
+    },
+    {
+      "two_theta": 67.55,
+      "intensity": 23.0,
+      "hkl": [
+        3,
+        0,
+        0
+      ],
+      "d": 1.3856
+    }
+  ]
+}

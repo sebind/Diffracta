@@ -1,0 +1,11 @@
+data_004-0783
+_chemical_name_mineral 'Silver (Ag)'
+_chemical_formula_sum 'Ag'
+_symmetry_space_group_name_H-M 'Fm-3m'
+_cell_length_a 4.0862
+_cell_length_b 4.0862
+_cell_length_c 4.0862
+_cell_angle_alpha 90.00
+_cell_angle_beta 90.00
+_cell_angle_gamma 90.00
+# JCPDS 004-0783 | COD 9008459

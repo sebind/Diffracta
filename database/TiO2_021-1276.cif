@@ -1,0 +1,11 @@
+data_021-1276
+_chemical_name_mineral 'Rutile (TiO2)'
+_chemical_formula_sum 'TiO2'
+_symmetry_space_group_name_H-M 'P42/mnm'
+_cell_length_a 4.5933
+_cell_length_b 4.5933
+_cell_length_c 2.9592
+_cell_angle_alpha 90.00
+_cell_angle_beta 90.00
+_cell_angle_gamma 90.00
+# JCPDS 021-1276 | COD 9004141

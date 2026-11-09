@@ -1,0 +1,69 @@
+{
+  "id": "027-1402",
+  "jcpds": "027-1402",
+  "cod_id": "9011998",
+  "name": "Silicon (Si)",
+  "formula": "Si",
+  "system": "Cubic",
+  "space_group": "Fd-3m",
+  "cell": {
+    "a": 5.4309,
+    "b": 5.4309,
+    "c": 5.4309,
+    "alpha": 90.0,
+    "beta": 90.0,
+    "gamma": 90.0
+  },
+  "peaks": [
+    {
+      "two_theta": 28.44,
+      "intensity": 100.0,
+      "hkl": [
+        1,
+        1,
+        1
+      ],
+      "d": 3.1355
+    },
+    {
+      "two_theta": 47.3,
+      "intensity": 55.0,
+      "hkl": [
+        2,
+        2,
+        0
+      ],
+      "d": 1.9201
+    },
+    {
+      "two_theta": 56.12,
+      "intensity": 30.0,
+      "hkl": [
+        3,
+        1,
+        1
+      ],
+      "d": 1.6375
+    },
+    {
+      "two_theta": 69.13,
+      "intensity": 6.0,
+      "hkl": [
+        4,
+        0,
+        0
+      ],
+      "d": 1.3577
+    },
+    {
+      "two_theta": 76.38,
+      "intensity": 11.0,
+      "hkl": [
+        3,
+        3,
+        1
+      ],
+      "d": 1.2459
+    }
+  ]
+}

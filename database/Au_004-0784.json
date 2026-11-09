@@ -1,0 +1,59 @@
+{
+  "id": "004-0784",
+  "jcpds": "004-0784",
+  "cod_id": "9008463",
+  "name": "Gold (Au)",
+  "formula": "Au",
+  "system": "Cubic",
+  "space_group": "Fm-3m",
+  "cell": {
+    "a": 4.0786,
+    "b": 4.0786,
+    "c": 4.0786,
+    "alpha": 90.0,
+    "beta": 90.0,
+    "gamma": 90.0
+  },
+  "peaks": [
+    {
+      "two_theta": 38.18,
+      "intensity": 100.0,
+      "hkl": [
+        1,
+        1,
+        1
+      ],
+      "d": 2.3548
+    },
+    {
+      "two_theta": 44.39,
+      "intensity": 52.0,
+      "hkl": [
+        2,
+        0,
+        0
+      ],
+      "d": 2.0393
+    },
+    {
+      "two_theta": 64.58,
+      "intensity": 32.0,
+      "hkl": [
+        2,
+        2,
+        0
+      ],
+      "d": 1.442
+    },
+    {
+      "two_theta": 77.55,
+      "intensity": 36.0,
+      "hkl": [
+        3,
+        1,
+        1
+      ],
+      "d": 1.2297
+    }
+  ]
+}

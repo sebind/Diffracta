@@ -1,0 +1,11 @@
+data_034-0394
+_chemical_name_mineral 'Cerianite (CeO2)'
+_chemical_formula_sum 'CeO2'
+_symmetry_space_group_name_H-M 'Fm-3m'
+_cell_length_a 5.4113
+_cell_length_b 5.4113
+_cell_length_c 5.4113
+_cell_angle_alpha 90.00
+_cell_angle_beta 90.00
+_cell_angle_gamma 90.00
+# JCPDS 034-0394 | COD 9009008

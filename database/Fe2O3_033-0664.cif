@@ -1,0 +1,11 @@
+data_033-0664
+_chemical_name_mineral 'Hematite (alpha-Fe2O3)'
+_chemical_formula_sum 'Fe2O3'
+_symmetry_space_group_name_H-M 'R-3c'
+_cell_length_a 5.0356
+_cell_length_b 5.0356
+_cell_length_c 13.7489
+_cell_angle_alpha 90.00
+_cell_angle_beta 90.00
+_cell_angle_gamma 120.00
+# JCPDS 033-0664 | COD 9000139

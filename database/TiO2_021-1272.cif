@@ -1,0 +1,11 @@
+data_021-1272
+_chemical_name_mineral 'Anatase (TiO2)'
+_chemical_formula_sum 'TiO2'
+_symmetry_space_group_name_H-M 'I41/amd'
+_cell_length_a 3.7852
+_cell_length_b 3.7852
+_cell_length_c 9.5139
+_cell_angle_alpha 90.00
+_cell_angle_beta 90.00
+_cell_angle_gamma 90.00
+# JCPDS 021-1272 | COD 9009086

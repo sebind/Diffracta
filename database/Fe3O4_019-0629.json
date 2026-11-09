@@ -1,0 +1,89 @@
+{
+  "id": "019-0629",
+  "jcpds": "019-0629",
+  "cod_id": "9005812",
+  "name": "Magnetite (Fe3O4)",
+  "formula": "Fe3O4",
+  "system": "Cubic",
+  "space_group": "Fd-3m",
+  "cell": {
+    "a": 8.396,
+    "b": 8.396,
+    "c": 8.396,
+    "alpha": 90.0,
+    "beta": 90.0,
+    "gamma": 90.0
+  },
+  "peaks": [
+    {
+      "two_theta": 30.1,
+      "intensity": 30.0,
+      "hkl": [
+        2,
+        2,
+        0
+      ],
+      "d": 2.9684
+    },
+    {
+      "two_theta": 35.45,
+      "intensity": 100.0,
+      "hkl": [
+        3,
+        1,
+        1
+      ],
+      "d": 2.5315
+    },
+    {
+      "two_theta": 37.09,
+      "intensity": 8.0,
+      "hkl": [
+        2,
+        2,
+        2
+      ],
+      "d": 2.4237
+    },
+    {
+      "two_theta": 43.09,
+      "intensity": 20.0,
+      "hkl": [
+        4,
+        0,
+        0
+      ],
+      "d": 2.099
+    },
+    {
+      "two_theta": 53.45,
+      "intensity": 10.0,
+      "hkl": [
+        4,
+        2,
+        2
+      ],
+      "d": 1.714
+    },
+    {
+      "two_theta": 56.98,
+      "intensity": 30.0,
+      "hkl": [
+        5,
+        1,
+        1
+      ],
+      "d": 1.6155
+    },
+    {
+      "two_theta": 62.57,
+      "intensity": 40.0,
+      "hkl": [
+        4,
+        4,
+        0
+      ],
+      "d": 1.4842
+    }
+  ]
+}
