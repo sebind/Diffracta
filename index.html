@@ -2,14 +2,17 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0F1713" />
+  <meta name="description" content="Diffracta — Publication-ready powder X-ray diffraction (XRD) phase identification, Miller indexing, and full-profile Rietveld refinement." />
   <title>Diffracta — XRD Analysis</title>
-  <link rel="icon" type="image/svg+xml" href="static/favicon.svg" />
-  <link rel="stylesheet" href="static/styles.css" />
+  <link rel="icon" type="image/svg+xml" href="static/favicon.svg?v=8" />
+  <link rel="stylesheet" href="static/styles.css?v=8" />
 </head>
 <body>
   <header class="topbar">
     <div class="brand">
+      <img src="static/favicon.svg?v=8" alt="Diffracta logo" class="brand-logo" width="28" height="28" />
       <span class="brand-title">Diffracta</span>
       <span class="brand-tag">XRD</span>
     </div>
@@ -79,11 +82,21 @@
             <div style="display:flex; gap:4px;">
               <button id="searchMatchBtn" class="btn btn-sm btn-chive">Auto Match</button>
               <label class="btn btn-sm" for="dbUploadInput">+ CIF</label>
-              <input id="dbUploadInput" type="file" multiple accept=".cif,.json" hidden />
+              <input id="dbUploadInput" type="file" multiple accept=".cif,.json,.sq" hidden />
             </div>
           </div>
 
-          <div id="dbFolderPath" class="folder-tag">database/ (Local + COD + OPTIMADE)</div>
+          <div class="db-tools-row">
+            <button id="dbIndexBtn" class="btn btn-sm db-tool-btn" title="Set local Desktop path to .sq database (e.g. pdf2-1.sq)">
+              <span>db index</span>
+            </button>
+            <button id="restraintsBtn" class="btn btn-sm db-tool-btn" title="Open Restraints window to filter database &amp; search-match">
+              <span>Restraints</span>
+              <span id="restraintsActiveBadge" class="restraint-dot" hidden>0</span>
+            </button>
+          </div>
+
+          <div id="dbFolderPath" class="folder-tag" title="Active database folder / .sq index path">database/ (Local + COD + OPTIMADE)</div>
 
           <div class="source-pills">
             <button class="pill-btn active" data-source="all">All</button>
@@ -129,6 +142,12 @@
       </div>
 
       <div class="canvas-viewport" id="canvasViewport">
+        <div id="dropOverlay" class="drop-overlay" hidden>
+          <div class="drop-overlay-card">
+            <span class="drop-overlay-title">Drop XRD Scan or Database File</span>
+            <span class="drop-overlay-sub">.xy • .csv • .txt • .dat • .xrdml • .cif • .sq</span>
+          </div>
+        </div>
         <div class="graph-frame" id="graphFrame">
           <canvas id="xrdCanvas" width="1800" height="1575"></canvas>
           <!-- Inline Floating Editor for Interactive Canvas Labels -->
@@ -156,13 +175,25 @@
           <div class="grid-3">
             <select id="crystalSystemSelect" class="select">
               <option value="Hexagonal">Hexagonal</option>
+              <option value="Trigonal">Trigonal</option>
               <option value="Cubic">Cubic</option>
               <option value="Tetragonal">Tetragonal</option>
               <option value="Orthorhombic">Orthorhombic</option>
               <option value="Monoclinic">Monoclinic</option>
+              <option value="Triclinic">Triclinic</option>
             </select>
-            <input id="cellAInput" class="input" type="number" step="0.001" value="3.2498" title="a (Å)" />
-            <input id="cellCInput" class="input" type="number" step="0.001" value="5.2066" title="c (Å)" />
+            <input id="cellAInput" class="input" type="number" step="0.001" value="3.2498" title="a (Å)" placeholder="a (Å)" />
+            <input id="cellCInput" class="input" type="number" step="0.001" value="5.2066" title="c (Å)" placeholder="c (Å)" />
+          </div>
+          <div id="extraCellRow" class="grid-2" hidden>
+            <div class="field-item">
+              <span class="field-tag">b (Å)</span>
+              <input id="cellBInput" class="input" type="number" step="0.001" value="3.2498" title="b (Å)" />
+            </div>
+            <div class="field-item">
+              <span class="field-tag">β (°)</span>
+              <input id="cellBetaInput" class="input" type="number" step="0.05" value="90.0" title="β (°)" />
+            </div>
           </div>
 
           <div class="table-wrap">
@@ -232,6 +263,14 @@
               <span class="stat-label">Strain (%)</span>
               <span id="statStrain" class="stat-value">—</span>
             </div>
+            <div class="stat-box">
+              <span class="stat-label">R<sub>B</sub> (%)</span>
+              <span id="statRBragg" class="stat-value">—</span>
+            </div>
+            <div class="stat-box">
+              <span class="stat-label">Cryst. (%)</span>
+              <span id="statCryst" class="stat-value">—</span>
+            </div>
           </div>
         </section>
       </div>
@@ -244,6 +283,217 @@
     <button class="mobile-nav-btn" data-target="data">Pattern & DB</button>
     <button class="mobile-nav-btn" data-target="analysis">(hkl) & Rietveld</button>
   </nav>
+
+  <!-- db index (.sq Database Path) Modal -->
+  <div id="dbIndexModal" class="popup-backdrop" hidden>
+    <div class="db-index-dialog" role="dialog" aria-labelledby="dbIndexTitle">
+      <div class="db-index-header">
+        <span id="dbIndexTitle" class="db-index-title">db index — Local .sq Database Path</span>
+        <button id="closeDbIndexBtn" class="icon-btn" title="Close">✕</button>
+      </div>
+      <div class="db-index-body">
+        <div class="field-item">
+          <span class="field-tag">Local Desktop Folder or .sq File Path (e.g. pdf2-1.sq)</span>
+          <div class="db-filter-row">
+            <input id="sqPathInput" class="input" type="text" placeholder="C:\Users\...\Desktop\pdf2-1.sq" />
+            <button id="sqApplyPathBtn" class="btn btn-chive">Set Path</button>
+          </div>
+        </div>
+
+        <div class="sq-picker-actions">
+          <label class="btn btn-sm" for="sqFilePicker">Browse .sq File...</label>
+          <input id="sqFilePicker" type="file" accept=".sq,.sqlite,.sqlite3,.db" multiple hidden />
+          <label class="btn btn-sm" for="sqFolderPicker">Browse Desktop Folder...</label>
+          <input id="sqFolderPicker" type="file" webkitdirectory directory multiple hidden />
+          <button id="sqScanDesktopBtn" class="btn btn-sm">Scan Desktop</button>
+          <button id="sqClearIndexBtn" class="btn btn-sm">Reset Default</button>
+        </div>
+
+        <div id="sqStatusBox" class="sq-status-box">No external .sq file indexed yet (using built-in database/).</div>
+
+        <div class="field-item">
+          <span class="field-tag" id="sqBrowserDirLabel">Detected .sq Databases &amp; Desktop Folders</span>
+          <div id="sqBrowserList" class="sq-browser-list"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- QualX-Style Restraints Popup Window -->
+  <div id="restraintsModal" class="restraints-backdrop" hidden>
+    <div id="restraintsWindow" class="qx-window" role="dialog" aria-labelledby="restraintsWinTitle">
+      <div id="restraintsTitleBar" class="qx-titlebar">
+        <div class="qx-title-left">
+          <img src="static/favicon.svg?v=8" alt="Diffracta logo" class="qx-icon" width="22" height="22" />
+          <span id="restraintsWinTitle">Restraints</span>
+          <span class="brand-tag">Filter</span>
+        </div>
+        <button id="restraintsHeaderCloseBtn" class="qx-win-close" title="Close">✕</button>
+      </div>
+
+      <div class="qx-tabs" role="tablist">
+        <button class="qx-tab active" data-rtab="composition" type="button">Composition</button>
+        <button class="qx-tab" data-rtab="subfiles" type="button">Subfiles</button>
+        <button class="qx-tab" data-rtab="chemname" type="button">Chemical name</button>
+        <button class="qx-tab" data-rtab="entries" type="button">Entries</button>
+        <button class="qx-tab" data-rtab="symmetry" type="button">Symmetry</button>
+        <button class="qx-tab" data-rtab="cell" type="button">Cell and properties</button>
+      </div>
+
+      <div class="qx-tab-body">
+        <!-- Tab 1: Composition (Periodic Table) -->
+        <div id="rtabComposition" class="qx-pane active" data-rpane="composition">
+          <div class="qx-ptable-scroll">
+            <div id="periodicTableGrid" class="qx-ptable"></div>
+          </div>
+
+          <div class="qx-comp-controls">
+            <fieldset class="qx-logic-box">
+              <label><input type="radio" name="compLogicMode" value="and" checked /> And</label>
+              <label><input type="radio" name="compLogicMode" value="or" /> Or</label>
+              <label><input type="radio" name="compLogicMode" value="not" /> Not</label>
+              <label><input type="radio" name="compLogicMode" value="only" /> Only</label>
+              <label><input type="radio" name="compLogicMode" value="just" /> Just</label>
+            </fieldset>
+
+            <button id="compClearBtn" class="qx-btn" type="button">Clear</button>
+
+            <div class="qx-elem-count">
+              <span class="qx-count-label"># of elements:</span>
+              <div class="qx-minmax-col">
+                <input id="minElementsInput" type="number" min="1" max="20" class="qx-num-input" />
+                <span class="qx-sub-caption">min.</span>
+              </div>
+              <span class="qx-dash">-</span>
+              <div class="qx-minmax-col">
+                <input id="maxElementsInput" type="number" min="1" max="20" class="qx-num-input" />
+                <span class="qx-sub-caption">max.</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 2: Subfiles -->
+        <div id="rtabSubfiles" class="qx-pane" data-rpane="subfiles" hidden>
+          <div class="qx-form-panel">
+            <div class="qx-panel-heading">Select Database Subfiles / Compound Classes</div>
+            <div class="qx-subfiles-grid">
+              <label class="qx-check"><input type="checkbox" data-subfile="I" /> Inorganic (I)</label>
+              <label class="qx-check"><input type="checkbox" data-subfile="O" /> Organic (O)</label>
+              <label class="qx-check"><input type="checkbox" data-subfile="M" /> Mineral (M)</label>
+              <label class="qx-check"><input type="checkbox" data-subfile="A" /> Metal &amp; Alloy (A)</label>
+              <label class="qx-check"><input type="checkbox" data-subfile="C" /> Ceramic / Oxide (C)</label>
+              <label class="qx-check"><input type="checkbox" data-subfile="CP" /> Common Phases (CP)</label>
+              <label class="qx-check"><input type="checkbox" data-subfile="N" /> NIST / Standard (N)</label>
+              <label class="qx-check"><input type="checkbox" data-subfile="P" /> Polymer (P)</label>
+              <label class="qx-check"><input type="checkbox" data-subfile="Z" /> Zeolite (Z)</label>
+            </div>
+            <div class="qx-inline-row" style="margin-top:14px;">
+              <fieldset class="qx-logic-box">
+                <label><input type="radio" name="subfileMode" value="or" checked /> Or (Any selected)</label>
+                <label><input type="radio" name="subfileMode" value="and" /> And (All selected)</label>
+                <label><input type="radio" name="subfileMode" value="not" /> Not (Exclude)</label>
+              </fieldset>
+              <button id="subfilesClearBtn" class="qx-btn" type="button">Clear</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 3: Chemical name -->
+        <div id="rtabChemName" class="qx-pane" data-rpane="chemname" hidden>
+          <div class="qx-form-panel">
+            <div class="qx-panel-heading">Filter by Chemical, Mineral, or Formula Name</div>
+            <div class="qx-inline-row">
+              <input id="restrChemNameInput" type="text" class="qx-text-input" placeholder="e.g. Zincite, Anatase, Oxide, TiO2, Calcite..." />
+              <select id="restrChemModeSelect" class="qx-select">
+                <option value="contains">Contains</option>
+                <option value="starts_with">Starts with</option>
+                <option value="exact">Exact match</option>
+                <option value="exclude">Exclude</option>
+              </select>
+              <button id="chemNameClearBtn" class="qx-btn" type="button">Clear</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 4: Entries -->
+        <div id="rtabEntries" class="qx-pane" data-rpane="entries" hidden>
+          <div class="qx-form-panel">
+            <div class="qx-panel-heading">Filter by Reference Card / JCPDS / COD Entry Numbers</div>
+            <div class="qx-field-stack">
+              <label class="qx-label">Card / Entry IDs (comma-separated or wildcard <code>*</code>):</label>
+              <input id="restrEntriesInput" type="text" class="qx-text-input" placeholder="e.g. 036-1451, 021-*, 9009086" />
+            </div>
+            <div class="qx-inline-row" style="margin-top:12px;">
+              <span class="qx-label">Numeric Entry Range:</span>
+              <input id="restrEntryMinInput" type="number" class="qx-num-input" style="width:90px;" placeholder="Min" />
+              <span>–</span>
+              <input id="restrEntryMaxInput" type="number" class="qx-num-input" style="width:90px;" placeholder="Max" />
+              <button id="entriesClearBtn" class="qx-btn" type="button">Clear</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 5: Symmetry -->
+        <div id="rtabSymmetry" class="qx-pane" data-rpane="symmetry" hidden>
+          <div class="qx-form-panel">
+            <div class="qx-panel-heading">Crystal System &amp; Space Group Restraints</div>
+            <div class="qx-subfiles-grid">
+              <label class="qx-check"><input type="checkbox" data-sym-sys="Cubic" /> Cubic</label>
+              <label class="qx-check"><input type="checkbox" data-sym-sys="Tetragonal" /> Tetragonal</label>
+              <label class="qx-check"><input type="checkbox" data-sym-sys="Hexagonal" /> Hexagonal</label>
+              <label class="qx-check"><input type="checkbox" data-sym-sys="Trigonal" /> Trigonal / Rhombohedral</label>
+              <label class="qx-check"><input type="checkbox" data-sym-sys="Orthorhombic" /> Orthorhombic</label>
+              <label class="qx-check"><input type="checkbox" data-sym-sys="Monoclinic" /> Monoclinic</label>
+              <label class="qx-check"><input type="checkbox" data-sym-sys="Triclinic" /> Triclinic</label>
+            </div>
+            <div class="qx-inline-row" style="margin-top:14px;">
+              <span class="qx-label">Space Group (H-M):</span>
+              <input id="restrSpaceGroupInput" type="text" class="qx-text-input" style="max-width:200px;" placeholder="e.g. P63mc, Fm-3m, R-3c" />
+              <button id="symmetryClearBtn" class="qx-btn" type="button">Clear</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 6: Cell and properties -->
+        <div id="rtabCell" class="qx-pane" data-rpane="cell" hidden>
+          <div class="qx-form-panel">
+            <div class="qx-panel-heading">Unit-Cell Parameters &amp; Physical Property Bounds</div>
+            <div class="qx-cell-grid">
+              <div class="qx-cell-row"><span>a (Å):</span><input id="cellMinA" type="number" step="0.01" class="qx-num-input" placeholder="min" /><span>–</span><input id="cellMaxA" type="number" step="0.01" class="qx-num-input" placeholder="max" /></div>
+              <div class="qx-cell-row"><span>b (Å):</span><input id="cellMinB" type="number" step="0.01" class="qx-num-input" placeholder="min" /><span>–</span><input id="cellMaxB" type="number" step="0.01" class="qx-num-input" placeholder="max" /></div>
+              <div class="qx-cell-row"><span>c (Å):</span><input id="cellMinC" type="number" step="0.01" class="qx-num-input" placeholder="min" /><span>–</span><input id="cellMaxC" type="number" step="0.01" class="qx-num-input" placeholder="max" /></div>
+              <div class="qx-cell-row"><span>α (°):</span><input id="cellMinAlpha" type="number" step="0.1" class="qx-num-input" placeholder="min" /><span>–</span><input id="cellMaxAlpha" type="number" step="0.1" class="qx-num-input" placeholder="max" /></div>
+              <div class="qx-cell-row"><span>β (°):</span><input id="cellMinBeta" type="number" step="0.1" class="qx-num-input" placeholder="min" /><span>–</span><input id="cellMaxBeta" type="number" step="0.1" class="qx-num-input" placeholder="max" /></div>
+              <div class="qx-cell-row"><span>γ (°):</span><input id="cellMinGamma" type="number" step="0.1" class="qx-num-input" placeholder="min" /><span>–</span><input id="cellMaxGamma" type="number" step="0.1" class="qx-num-input" placeholder="max" /></div>
+              <div class="qx-cell-row"><span>Vol (Å³):</span><input id="cellMinVol" type="number" step="1" class="qx-num-input" placeholder="min" /><span>–</span><input id="cellMaxVol" type="number" step="1" class="qx-num-input" placeholder="max" /></div>
+              <div class="qx-cell-row"><span>ρ (g/cm³):</span><input id="cellMinDens" type="number" step="0.1" class="qx-num-input" placeholder="min" /><span>–</span><input id="cellMaxDens" type="number" step="0.1" class="qx-num-input" placeholder="max" /></div>
+            </div>
+            <div style="margin-top:12px;">
+              <button id="cellClearBtn" class="qx-btn" type="button">Clear</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="restraintsHelpBox" class="qx-help-box" hidden>
+          <strong>Restraints Quick Guide:</strong> Choose a logic mode (<b>And</b> = required, <b>Or</b> = at least one, <b>Not</b> = excluded, <b>Only</b> = allowed subset only, <b>Just</b> = exact element set) and click elements, group headers (<b>IA–VIII</b>), or period buttons (<b>Period 1–7, LN, AC</b>). Click <b>Search with restraints</b> to automatically match filtered reference peaks against the identified XRD peaks, or <b>Load cards</b> to inspect matching database entries.
+        </div>
+      </div>
+
+      <div class="qx-footer">
+        <div class="qx-footer-left">
+          <button id="restraintsLoadCardsBtn" class="qx-btn qx-btn-chive" type="button">Load cards</button>
+          <button id="restraintsMergeCardsBtn" class="qx-btn" type="button">Load and Merge Cards</button>
+          <button id="restraintsSearchBtn" class="qx-btn qx-btn-primary" type="button">Search with restraints</button>
+        </div>
+        <div class="qx-footer-right">
+          <button id="restraintsCancelAllBtn" class="qx-btn" type="button">Cancel all restraints!</button>
+          <button id="restraintsCloseBtn" class="qx-btn" type="button">Close</button>
+          <button id="restraintsHelpBtn" class="qx-btn" type="button">Help</button>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <!-- Publication Report Modal -->
   <div id="reportModal" class="report-modal-backdrop" hidden>
@@ -261,6 +511,8 @@
     </div>
   </div>
 
-  <script src="static/app.js"></script>
+  <div id="toastContainer" class="toast-container" aria-live="polite"></div>
+
+  <script src="static/app.js?v=8"></script>
 </body>
 </html>

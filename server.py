@@ -40,11 +40,35 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def add_security_headers(request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
+
+
 class SearchMatchRequest(BaseModel):
     two_theta: List[float] = Field(..., min_length=2)
     intensity: List[float] = Field(..., min_length=2)
     tolerance_deg: float = 0.45
     extra_phases: Optional[List[Dict[str, Any]]] = None
+    identified_peaks: Optional[List[Dict[str, Any]]] = None
+    restraints: Optional[Dict[str, Any]] = None
+    query: str = ""
+    source: str = "all"
+    sample_hint: str = ""
+
+
+class SqIndexRequest(BaseModel):
+    path: Optional[str] = None
+
+
+class DatabaseFilterRequest(BaseModel):
+    restraints: Optional[Dict[str, Any]] = None
+    query: str = ""
+    source: str = "local"
+    sample_hint: str = ""
 
 
 class IndexPeaksRequest(BaseModel):
@@ -98,18 +122,13 @@ def api_init():
         prominence_pct=5.5
     ) if top_trace["two_theta"] else {"system": "Hexagonal", "cell": {}, "peaks": []}
 
-    matches = xrd_engine.search_match_phases(
-        series[0]["two_theta"],
-        series[0]["intensity"]
-    ) if series else []
-
     return {
         "database_dir": xrd_engine.DATABASE_DIR,
         "series": series,
         "local_db": local_db,
         "active_reference": zno_ref,
         "indexed": indexed,
-        "matches": matches
+        "matches": []
     }
 
 
@@ -158,8 +177,80 @@ async def api_upload_xrd(files: List[UploadFile] = File(...)):
 def api_get_local_db():
     return {
         "database_dir": xrd_engine.DATABASE_DIR,
+        "sq_status": xrd_engine.get_sq_database_status(),
         "phases": xrd_engine.load_local_database()
     }
+
+
+@app.get("/api/database/sq-status")
+def api_sq_status():
+    return xrd_engine.get_sq_database_status()
+
+
+@app.get("/api/database/sq-browse")
+def api_sq_browse(dir: Optional[str] = Query(None, description="Local directory to browse for .sq files")):
+    return xrd_engine.scan_sq_directory(dir)
+
+
+@app.post("/api/database/sq-index")
+def api_set_sq_index(req: SqIndexRequest):
+    try:
+        status = xrd_engine.set_sq_database_path(req.path)
+        return status
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to index .sq database: {e}")
+
+
+@app.post("/api/database/sq-upload")
+async def api_upload_sq_file(file: UploadFile = File(...)):
+    fname = sanitize_filename(file.filename or "custom.sq", default="custom.sq")
+    ext = os.path.splitext(fname)[1].lower()
+    if ext not in (".sq", ".sqlite", ".sqlite3", ".db"):
+        raise HTTPException(status_code=400, detail="Only .sq / SQLite database files are supported")
+    dest = os.path.join(xrd_engine.DATABASE_DIR, fname)
+    raw = await file.read()
+    with open(dest, "wb") as f:
+        f.write(raw)
+    try:
+        status = xrd_engine.set_sq_database_path(dest)
+        return status
+    except Exception as e:
+        if os.path.exists(dest):
+            os.remove(dest)
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/database/filter")
+def api_filter_database(req: DatabaseFilterRequest):
+    results: List[Dict[str, Any]] = []
+    src = (req.source or "all").strip().lower()
+    q_clean = req.query.strip()
+    has_remote_restraints = xrd_engine._has_positive_remote_restraints(req.restraints)
+
+    if src in ("local", "all", "sq"):
+        results.extend(xrd_engine.load_local_database(include_sq=True, restraints=req.restraints, query=req.query))
+
+    if src == "cod" or (src == "all" and (q_clean or has_remote_restraints)):
+        cod_hits = xrd_engine.query_cod_database(
+            q_clean,
+            max_results=10 if src == "cod" else 6,
+            restraints=req.restraints,
+            sample_hint=req.sample_hint if src == "cod" else "",
+        )
+        results.extend(cod_hits)
+
+    if src == "optimade" or (src == "all" and (q_clean or has_remote_restraints)):
+        opt_hits = xrd_engine.query_optimade_database(
+            q_clean,
+            max_results=10 if src == "optimade" else 6,
+            restraints=req.restraints,
+            sample_hint=req.sample_hint if src == "optimade" else "",
+        )
+        results.extend(opt_hits)
+
+    return {"results": results}
 
 
 @app.post("/api/database/upload")
@@ -167,13 +258,20 @@ async def api_upload_to_local_db(files: List[UploadFile] = File(...)):
     saved = []
     for uf in files:
         raw_bytes = await uf.read()
+        fname = sanitize_filename(uf.filename or "custom.cif")
+        ext = os.path.splitext(fname)[1].lower()
+        if ext in (".sq", ".sqlite", ".sqlite3", ".db"):
+            dest = os.path.join(xrd_engine.DATABASE_DIR, fname)
+            with open(dest, "wb") as f:
+                f.write(raw_bytes)
+            xrd_engine.set_sq_database_path(dest)
+            saved.append(fname)
+            continue
         if len(raw_bytes) > MAX_UPLOAD_BYTES:
             raise HTTPException(status_code=413, detail=f"File exceeds 10 MB limit: {uf.filename}")
         text = raw_bytes.decode("utf-8", errors="ignore")
-        fname = sanitize_filename(uf.filename or "custom.cif")
-        ext = os.path.splitext(fname)[1].lower()
         if ext not in (".cif", ".json"):
-            raise HTTPException(status_code=400, detail="Only .cif and .json files are supported for database import")
+            raise HTTPException(status_code=400, detail="Only .cif, .json, and .sq files are supported for database import")
         dest = os.path.join(xrd_engine.DATABASE_DIR, fname)
         with open(dest, "w", encoding="utf-8") as f:
             f.write(text)
@@ -241,7 +339,12 @@ def api_search_match(req: SearchMatchRequest):
         req.two_theta,
         req.intensity,
         tolerance_deg=req.tolerance_deg,
-        extra_phases=req.extra_phases
+        extra_phases=req.extra_phases,
+        identified_peaks=req.identified_peaks,
+        restraints=req.restraints,
+        query=req.query,
+        source=req.source,
+        sample_hint=req.sample_hint,
     )
     return {"matches": matches}
 
@@ -338,15 +441,20 @@ def api_load_preset(name: str):
         series[-1]["intensity"],
         reference_phase=ref
     )
-    matches = xrd_engine.search_match_phases(series[0]["two_theta"], series[0]["intensity"])
     return {
         "database_dir": xrd_engine.DATABASE_DIR,
         "series": series,
         "local_db": local_db,
         "active_reference": ref,
         "indexed": indexed,
-        "matches": matches
+        "matches": []
     }
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+@app.get("/favicon.svg", include_in_schema=False)
+def serve_favicon():
+    return FileResponse(os.path.join(STATIC_DIR, "favicon.svg"), media_type="image/svg+xml")
 
 
 @app.get("/")
