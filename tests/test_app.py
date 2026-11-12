@@ -848,6 +848,28 @@ def test_python_310_311_fstring_syntax_compatibility():
                 assert "\\" not in seg, f"Python <3.12 incompatible backslash in f-string expr at {py_path}:{node.lineno}: {seg}"
 
 
+def test_static_github_pages_database_engine_no_1500_cap():
+    """Verifies GitHub Pages static mode indexes full .sq databases without LIMIT 1500 cap and computes |F_hkl|^2."""
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    js = open(os.path.join(base, "static", "app.js"), encoding="utf-8").read()
+    root_html = open(os.path.join(base, "index.html"), encoding="utf-8").read()
+    static_html = open(os.path.join(base, "static", "index.html"), encoding="utf-8").read()
+
+    assert root_html == static_html
+    assert "LIMIT 1500" not in js
+    for fn_name in (
+        "async function openClientSqStore(",
+        "async function queryClientSqStores(",
+        "async function searchClientSqStoresByPeaks(",
+        "async function enrichPhasesFromPdf2DatClient(",
+        "async function loadBundledSampleSqStatic(",
+        "function computeStructureFactorPeaksClient(",
+        "function deduplicatePdfSiblingSqFilesClient(",
+    ):
+        assert fn_name in js, f"Missing static database engine function: {fn_name}"
+
+
+
 
 
 

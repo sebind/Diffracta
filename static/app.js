@@ -554,6 +554,7 @@ const PERIODIC_TABLE_ELEMENTS = [
 ];
 
 const VALID_ELEMENTS_SET = new Set(PERIODIC_TABLE_ELEMENTS.map((e) => e.sym));
+const ELEMENT_Z_MAP = new Map(PERIODIC_TABLE_ELEMENTS.map((e) => [e.sym, e.z]));
 
 function extractFormulaElementsClient(formula) {
   if (!formula) return [];
@@ -913,6 +914,7 @@ function loadLocalDatabaseClient() {
   const customList = loadCustomLocalStoragePhasesClient();
   const map = new Map();
   SEED_PHASES.forEach((p) => map.set(p.id, enrichPhaseClient(p)));
+  (bundledStaticSqPhases || []).forEach((p) => map.set(p.id, enrichPhaseClient(p)));
   customList.forEach((p) => map.set(p.id, p));
   (state.sqIndex.clientPhases || []).forEach((p) => map.set(p.id, enrichPhaseClient(p)));
   return Array.from(map.values());
@@ -1014,11 +1016,325 @@ function computeDSpacingsClient(system, cell, wavelength = 1.5406, min2T = 15.0,
   return out;
 }
 
+function cleanElementZClient(rawSym) {
+  if (!rawSym) return 14;
+  const s = String(rawSym).trim();
+  const m2 = s.match(/^([A-Z][a-z])/);
+  if (m2 && ELEMENT_Z_MAP.has(m2[1])) return ELEMENT_Z_MAP.get(m2[1]);
+  const m1 = s.match(/^([A-Z])/);
+  if (m1 && ELEMENT_Z_MAP.has(m1[1])) return ELEMENT_Z_MAP.get(m1[1]);
+  return 14;
+}
+
+function parseCifSymopXyzClient(expr) {
+  const parts = String(expr || '').replace(/^['"]|['"]$/g, '').toLowerCase().replace(/\s+/g, '').split(',');
+  if (parts.length !== 3) return null;
+  const mat = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+  const vec = [0, 0, 0];
+  const axes = { x: 0, y: 1, z: 2 };
+  for (let row = 0; row < 3; row++) {
+    const tokens = parts[row].match(/[+-]?[^+-]+/g) || [];
+    for (const tok of tokens) {
+      const mVar = tok.match(/^([+-]?)(\d+(?:\/\d+|\.\d+)?)?([xyz])$/);
+      if (mVar) {
+        const sign = mVar[1] === '-' ? -1 : 1;
+        let coeff = 1;
+        if (mVar[2]) {
+          if (mVar[2].includes('/')) {
+            const [num, den] = mVar[2].split('/');
+            coeff = parseFloat(num) / (parseFloat(den) || 1);
+          } else {
+            coeff = parseFloat(mVar[2]);
+          }
+        }
+        mat[row][axes[mVar[3]]] += sign * coeff;
+      } else if (tok.includes('/')) {
+        const [num, den] = tok.split('/');
+        const val = parseFloat(num) / (parseFloat(den) || 1);
+        if (Number.isFinite(val)) vec[row] += val;
+      } else {
+        const val = parseFloat(tok);
+        if (Number.isFinite(val)) vec[row] += val;
+      }
+    }
+  }
+  return { mat, vec };
+}
+
+function expandCifUnitCellAtomsClient(cifText, spaceGroup = 'P1') {
+  const lines = String(cifText || '').split(/\r?\n/);
+  const loops = [];
+  let i = 0;
+  while (i < lines.length) {
+    const trimmed = lines[i].trim();
+    if (trimmed.toLowerCase() === 'loop_') {
+      i++;
+      const tags = [];
+      while (i < lines.length) {
+        const lt = lines[i].trim();
+        if (!lt || lt.startsWith('#')) { i++; continue; }
+        if (lt.startsWith('_')) {
+          tags.push(lt.split(/\s+/)[0].toLowerCase());
+          i++;
+        } else {
+          break;
+        }
+      }
+      const rows = [];
+      let curTokens = [];
+      while (i < lines.length) {
+        const lt = lines[i].trim();
+        if (!lt || lt.startsWith('#')) { i++; continue; }
+        if (lt.toLowerCase() === 'loop_' || lt.startsWith('_') || lt.toLowerCase().startsWith('data_')) break;
+        if (lt.startsWith(';')) { i++; continue; }
+        const rowMatches = lt.match(/'[^']*'|"[^"]*"|\S+/g) || [];
+        for (const rm of rowMatches) {
+          curTokens.push(rm.replace(/^['"]|['"]$/g, ''));
+          if (tags.length > 0 && curTokens.length === tags.length) {
+            rows.push(curTokens);
+            curTokens = [];
+          }
+        }
+        i++;
+      }
+      if (tags.length && rows.length) loops.push({ tags, rows });
+    } else {
+      i++;
+    }
+  }
+
+  const cleanNum = (s, defV = 0) => {
+    if (s === undefined || s === null) return defV;
+    const v = parseFloat(String(s).replace(/\(.*?\)/g, ''));
+    return Number.isFinite(v) ? v : defV;
+  };
+  const wrap01 = (v) => ((v % 1) + 1) % 1;
+
+  const symops = [];
+  const asymAtoms = [];
+  for (const lp of loops) {
+    const symIdx = lp.tags.indexOf('_symmetry_equiv_pos_as_xyz') >= 0
+      ? lp.tags.indexOf('_symmetry_equiv_pos_as_xyz')
+      : lp.tags.indexOf('_space_group_symop_operation_xyz');
+    if (symIdx >= 0) {
+      for (const r of lp.rows) {
+        const op = parseCifSymopXyzClient(r[symIdx]);
+        if (op) symops.push(op);
+      }
+    }
+    const ix = lp.tags.indexOf('_atom_site_fract_x');
+    const iy = lp.tags.indexOf('_atom_site_fract_y');
+    const iz = lp.tags.indexOf('_atom_site_fract_z');
+    if (ix >= 0 && iy >= 0 && iz >= 0) {
+      const iSym = lp.tags.indexOf('_atom_site_type_symbol') >= 0
+        ? lp.tags.indexOf('_atom_site_type_symbol')
+        : lp.tags.indexOf('_atom_site_label');
+      const iOcc = lp.tags.indexOf('_atom_site_occupancy');
+      for (const r of lp.rows) {
+        const z = cleanElementZClient(iSym >= 0 ? r[iSym] : 'Si');
+        const occ = iOcc >= 0 ? cleanNum(r[iOcc], 1.0) : 1.0;
+        if (occ > 0) {
+          asymAtoms.push({
+            z,
+            occ: Math.min(Math.max(occ, 0.01), 1.0),
+            x: wrap01(cleanNum(r[ix], 0)),
+            y: wrap01(cleanNum(r[iy], 0)),
+            zFrac: wrap01(cleanNum(r[iz], 0))
+          });
+        }
+      }
+    }
+  }
+
+  if (!asymAtoms.length) return [];
+  if (!symops.length) {
+    const idMat = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+    symops.push({ mat: idMat, vec: [0, 0, 0] });
+    const cent = String(spaceGroup || 'P').trim().charAt(0).toUpperCase();
+    const trMap = {
+      I: [[0.5, 0.5, 0.5]],
+      F: [[0, 0.5, 0.5], [0.5, 0, 0.5], [0.5, 0.5, 0]],
+      C: [[0.5, 0.5, 0]],
+      A: [[0, 0.5, 0.5]],
+      B: [[0.5, 0, 0.5]],
+      R: [[2 / 3, 1 / 3, 1 / 3], [1 / 3, 2 / 3, 2 / 3]]
+    };
+    (trMap[cent] || []).forEach((tr) => symops.push({ mat: idMat, vec: tr }));
+  }
+
+  const expanded = [];
+  for (const at of asymAtoms) {
+    const siteImgs = [];
+    for (const op of symops) {
+      const m = op.mat, v = op.vec;
+      const nx = wrap01(m[0][0] * at.x + m[0][1] * at.y + m[0][2] * at.zFrac + v[0]);
+      const ny = wrap01(m[1][0] * at.x + m[1][1] * at.y + m[1][2] * at.zFrac + v[1]);
+      const nz = wrap01(m[2][0] * at.x + m[2][1] * at.y + m[2][2] * at.zFrac + v[2]);
+      let isDup = false;
+      for (const prev of siteImgs) {
+        const dx = Math.abs(nx - prev[0]), dy = Math.abs(ny - prev[1]), dz = Math.abs(nz - prev[2]);
+        const md = Math.max(Math.min(dx, 1 - dx), Math.min(dy, 1 - dy), Math.min(dz, 1 - dz));
+        if (md < 0.012) { isDup = true; break; }
+      }
+      if (!isDup) {
+        siteImgs.push([nx, ny, nz]);
+        expanded.push({ z: at.z, occ: at.occ, x: nx, y: ny, zFrac: nz });
+      }
+    }
+  }
+  return expanded;
+}
+
+function computeStructureFactorPeaksClient(
+  cell,
+  system,
+  atoms,
+  wavelength = 1.5406,
+  min2T = 5.0,
+  max2T = 85.0,
+  maxPeaks = 45
+) {
+  if (!atoms || !atoms.length) return [];
+  const a = Number(cell.a || 4.0);
+  const b = Number(cell.b || a);
+  const c = Number(cell.c || a);
+  const sysLow = String(system || '').toLowerCase();
+  const alpha = ((cell.alpha || 90.0) * Math.PI) / 180.0;
+  const beta = ((cell.beta || 90.0) * Math.PI) / 180.0;
+  const gamma = (((cell.gamma || (sysLow === 'hexagonal' || sysLow === 'trigonal' ? 120.0 : 90.0))) * Math.PI) / 180.0;
+
+  const ca = Math.cos(alpha), cb = Math.cos(beta), cg = Math.cos(gamma);
+  const sa = Math.sin(alpha), sb = Math.sin(beta), sg = Math.sin(gamma);
+  const volSq = Math.max(1e-8, 1.0 - ca * ca - cb * cb - cg * cg + 2.0 * ca * cb * cg);
+  const V = a * b * c * Math.sqrt(volSq);
+  if (V <= 1e-6) return [];
+
+  const aStar = (b * c * sa) / V;
+  const bStar = (a * c * sb) / V;
+  const cStar = (a * b * sg) / V;
+  const caStar = (cb * cg - ca) / (sb * sg || 1);
+  const cbStar = (ca * cg - cb) / (sa * sg || 1);
+  const cgStar = (ca * cb - cg) / (sa * sb || 1);
+
+  const sinMax = Math.sin((Math.min(max2T, 160.0) / 2.0) * (Math.PI / 180.0));
+  const dMin = Math.max(wavelength / (2.0 * Math.max(sinMax, 0.05)), 1.05);
+  let hMax = Math.min(Math.max(4, Math.ceil(a / dMin)), 14);
+  let kMax = Math.min(Math.max(4, Math.ceil(b / dMin)), 14);
+  let lMax = Math.min(Math.max(4, Math.ceil(c / dMin)), 18);
+  while ((2 * hMax + 1) * (2 * kMax + 1) * (lMax + 1) > 26000 && Math.max(hMax, kMax, lMax) > 5) {
+    if (lMax >= Math.max(hMax, kMax)) lMax--;
+    else if (hMax >= kMax) hMax--;
+    else kMax--;
+  }
+
+  const nAt = atoms.length;
+  const zOcc = new Float64Array(nAt);
+  const ax = new Float64Array(nAt);
+  const ay = new Float64Array(nAt);
+  const az = new Float64Array(nAt);
+  for (let i = 0; i < nAt; i++) {
+    zOcc[i] = Number(atoms[i].z || 14) * Number(atoms[i].occ ?? 1.0);
+    ax[i] = Number(atoms[i].x || 0);
+    ay[i] = Number(atoms[i].y || 0);
+    az[i] = Number(atoms[i].zFrac ?? atoms[i].z_frac ?? 0);
+  }
+
+  const twoPi = 2.0 * Math.PI;
+  const shells = new Map();
+
+  for (let h = -hMax; h <= hMax; h++) {
+    for (let k = -kMax; k <= kMax; k++) {
+      for (let l = 0; l <= lMax; l++) {
+        if (!(l > 0 || (l === 0 && k > 0) || (l === 0 && k === 0 && h > 0))) continue;
+        const invD2 =
+          (h * aStar) * (h * aStar) +
+          (k * bStar) * (k * bStar) +
+          (l * cStar) * (l * cStar) +
+          2.0 * h * k * aStar * bStar * cgStar +
+          2.0 * k * l * bStar * cStar * caStar +
+          2.0 * h * l * aStar * cStar * cbStar;
+        if (invD2 <= 1e-8) continue;
+        const dVal = 1.0 / Math.sqrt(invD2);
+        const sinTh = wavelength / (2.0 * dVal);
+        if (sinTh <= 0.0 || sinTh >= 0.995) continue;
+        const ttVal = (2.0 * Math.asin(sinTh) * 180.0) / Math.PI;
+        if (ttVal < min2T || ttVal > max2T) continue;
+
+        const sSq = (sinTh / wavelength) * (sinTh / wavelength);
+        const decay = Math.exp(-2.2 * sSq);
+        let reF = 0.0, imF = 0.0;
+        for (let i = 0; i < nAt; i++) {
+          const ph = twoPi * (h * ax[i] + k * ay[i] + l * az[i]);
+          const w = decay * zOcc[i];
+          reF += w * Math.cos(ph);
+          imF += w * Math.sin(ph);
+        }
+        const f2Val = 2.0 * (reF * reF + imF * imF);
+        if (f2Val <= 1e-4) continue;
+
+        const shellKey = Math.round(dVal * 2000);
+        const hklScore = (h >= 0 ? 8 : 0) + (k >= 0 ? 4 : 0) + (l >= 0 ? 2 : 0) + (h >= k ? 1 : 0);
+        const existing = shells.get(shellKey);
+        if (!existing) {
+          shells.set(shellKey, {
+            two_theta: Number(ttVal.toFixed(3)),
+            d: Number(dVal.toFixed(4)),
+            hkl: [h, k, l],
+            mult: 2,
+            f2Sum: f2Val,
+            bestScore: hklScore,
+            bestF2: f2Val
+          });
+        } else {
+          existing.mult += 2;
+          existing.f2Sum += f2Val;
+          if (
+            f2Val > existing.bestF2 * 1.05 ||
+            (Math.abs(f2Val - existing.bestF2) <= existing.bestF2 * 0.05 && hklScore > existing.bestScore)
+          ) {
+            existing.hkl = [h, k, l];
+            existing.bestScore = hklScore;
+            existing.bestF2 = Math.max(existing.bestF2, f2Val);
+          }
+        }
+      }
+    }
+  }
+
+  if (!shells.size) return [];
+  const rawList = [];
+  let maxI = 1e-8;
+  for (const sh of shells.values()) {
+    const thRad = (sh.two_theta / 2.0) * (Math.PI / 180.0);
+    const denom = Math.sin(thRad) * Math.sin(thRad) * Math.cos(thRad);
+    if (denom <= 1e-8) continue;
+    const lp = (1.0 + Math.pow(Math.cos(2.0 * thRad), 2)) / denom;
+    const rawI = sh.f2Sum * lp;
+    if (rawI > maxI) maxI = rawI;
+    rawList.push({ two_theta: sh.two_theta, d: sh.d, hkl: sh.hkl, mult: sh.mult, rawI });
+  }
+  if (!rawList.length) return [];
+
+  const cleaned = [];
+  for (const r of rawList) {
+    const relI = Number(((r.rawI / maxI) * 100.0).toFixed(1));
+    if (relI >= 1.5) {
+      cleaned.push({ two_theta: r.two_theta, d: r.d, hkl: r.hkl, mult: r.mult, intensity: relI });
+    }
+  }
+  return cleaned
+    .sort((x, y) => y.intensity - x.intensity)
+    .slice(0, maxPeaks)
+    .sort((x, y) => x.two_theta - y.two_theta);
+}
+
 function parseCifClient(cifText, sourceId = 'CIF') {
   const extractVal = (tag) => {
     const re = new RegExp(tag + "\\s+(['\"].*?['\"]|\\S+)", 'i');
     const m = cifText.match(re);
-    return m ? m[1].replace(/^['"]|['"]$/g, '') : null;
+    if (!m) return null;
+    const val = m[1].replace(/^['"]|['"]$/g, '');
+    return val === '?' || val === '.' ? null : val;
   };
   const extractFloat = (tag, defVal) => {
     const raw = extractVal(tag);
@@ -1035,18 +1351,26 @@ function parseCifClient(cifText, sourceId = 'CIF') {
   const beta = extractFloat('_cell_angle_beta', 90);
   const gamma = extractFloat('_cell_angle_gamma', 90);
 
-  const formula = extractVal('_chemical_formula_sum') || extractVal('_chemical_formula_structural') || sourceId;
+  const rawFormula = extractVal('_chemical_formula_structural') || extractVal('_chemical_formula_sum') || sourceId;
+  const formula = String(rawFormula).replace(/^[-\s]+|[-\s]+$/g, '').trim() || sourceId;
   const name = extractVal('_chemical_name_mineral') || extractVal('_chemical_name_common') || formula;
   const sg = extractVal('_symmetry_space_group_name_H-M') || extractVal('_space_group_name_H-M_alt') || 'P1';
 
   let system = 'Orthorhombic';
-  if (Math.abs(gamma - 120) < 0.2) system = 'Hexagonal';
-  else if (Math.abs(a - b) < 0.01 && Math.abs(b - c) < 0.01) system = 'Cubic';
-  else if (Math.abs(a - b) < 0.01) system = 'Tetragonal';
+  if (Math.abs(alpha - 90) < 0.2 && Math.abs(beta - 90) < 0.2 && Math.abs(gamma - 120) < 0.2) system = 'Hexagonal';
+  else if (Math.abs(a - b) < 0.01 && Math.abs(b - c) < 0.01 && Math.abs(alpha - 90) < 0.2 && Math.abs(beta - 90) < 0.2 && Math.abs(gamma - 90) < 0.2) system = 'Cubic';
+  else if (Math.abs(a - b) < 0.01 && Math.abs(alpha - 90) < 0.2 && Math.abs(beta - 90) < 0.2 && Math.abs(gamma - 90) < 0.2) system = 'Tetragonal';
+  else if (Math.abs(alpha - 90) < 0.2 && Math.abs(beta - 90) < 0.2 && Math.abs(gamma - 90) < 0.2) system = 'Orthorhombic';
+  else if (Math.abs(alpha - 90) < 0.2 && Math.abs(gamma - 90) < 0.2) system = 'Monoclinic';
+  else system = 'Triclinic';
 
   const cell = { a, b, c, alpha, beta, gamma };
-  let peaks = computeDSpacingsClient(system, cell, 1.5406, 15.0, 80.0, 4);
-  peaks = peaks.sort((x, y) => y.intensity - x.intensity).slice(0, 15).sort((x, y) => x.two_theta - y.two_theta);
+  const atoms = expandCifUnitCellAtomsClient(cifText, sg);
+  let peaks = atoms.length ? computeStructureFactorPeaksClient(cell, system, atoms, 1.5406, 5.0, 85.0, 45) : [];
+  if (!peaks.length) {
+    peaks = computeDSpacingsClient(system, cell, 1.5406, 5.0, 85.0, 5);
+    peaks = peaks.sort((x, y) => y.intensity - x.intensity).slice(0, 24).sort((x, y) => x.two_theta - y.two_theta);
+  }
 
   return {
     id: sourceId,
@@ -1204,7 +1528,8 @@ function searchMatchClient(
   identifiedPeaks = null,
   restraints = null,
   query = '',
-  source = 'all'
+  source = 'all',
+  sampleHint = ''
 ) {
   const expPeaks = identifiedPeaks && identifiedPeaks.length
     ? identifiedPeaks
@@ -1221,7 +1546,7 @@ function searchMatchClient(
     const s = String(p.source || '').toLowerCase();
     if (source === 'local' && !(s.includes('local') || s.includes('.sq'))) return;
     if (source === 'cod' && !s.includes('cod')) return;
-    if (source === 'optimade' && !(s.includes('optimade') || s.includes('materials cloud') || s.includes('rruff'))) return;
+    if (source === 'optimade' && !(s.includes('optimade') || s.includes('materials cloud') || s.includes('alexandria') || s.includes('rruff'))) return;
     poolMap.set(p.id, enrichPhaseClient(p));
   });
 
@@ -1229,6 +1554,10 @@ function searchMatchClient(
   if ((restraints && hasActiveRestraints(restraints)) || (query && query.trim())) {
     candidates = filterPhasesByRestraintsClient(candidates, restraints, query);
   }
+
+  const hintFormula = !(query && query.trim()) ? extractCleanFormulaHintClient(sampleHint) : '';
+  const hintStoich = hintFormula ? parseFormulaStoichiometryClient(hintFormula) : null;
+  const hintElemSet = hintStoich ? new Set(Object.keys(hintStoich)) : null;
 
   const totalExpWeight = expPeaks.reduce((acc, ep) => acc + Math.max(Number(ep.intensity || 10), 3), 0) || 1.0;
   const nExp = expPeaks.length;
@@ -1303,7 +1632,19 @@ function searchMatchClient(
 
       const refScore = (matchedRefWeight / totalRefWeight) * 100.0;
       const expScore = (matchedExpWeight / totalExpWeight) * 100.0;
-      const fom = (0.58 * refScore + 0.42 * expScore) * strongestLineFactor * specFactor;
+      let fom = (0.58 * refScore + 0.42 * expScore) * strongestLineFactor * specFactor;
+
+      if (hintStoich && fom >= 65.0) {
+        const pStoich = parseFormulaStoichiometryClient(phase.formula || '');
+        if (pStoich) {
+          const pkA = Object.keys(hintStoich), pkB = Object.keys(pStoich);
+          if (pkA.length === pkB.length && pkA.every((k) => pStoich[k] !== undefined && Math.abs(hintStoich[k] - pStoich[k]) < 0.03)) {
+            fom += 3.5;
+          } else if (hintElemSet && pkB.length === hintElemSet.size && pkB.every((k) => hintElemSet.has(k))) {
+            fom += 1.5;
+          }
+        }
+      }
 
       ranked.push({
         ...phase,
@@ -1934,102 +2275,260 @@ async function queryOnlineDatabasesClient(query, source = 'all') {
     } catch (_) {}
   }
 
-  const results = [];
+  const resultsMap = new Map();
+  const pushResult = (ph) => {
+    if (ph && ph.id && !resultsMap.has(ph.id)) {
+      resultsMap.set(ph.id, enrichPhaseClient(ph));
+    }
+  };
 
   if (source === 'local' || source === 'all') {
     const localFiltered = filterPhasesByRestraintsClient(loadLocalDatabaseClient(), state.restraints, q);
-    results.push(...localFiltered);
+    localFiltered.forEach(pushResult);
+    if (clientSqStores.length > 0) {
+      const sqQueried = await queryClientSqStores(q, state.restraints, 250);
+      sqQueried.forEach(pushResult);
+    }
   }
 
   const comp = (state.restraints && state.restraints.composition) || {};
-  const restraintElems = [
+  const cnameQuery = String((state.restraints && state.restraints.chemical_name && state.restraints.chemical_name.query) || '').trim();
+  const posRestraintElems = [
     ...(comp.just_elements || []),
     ...(comp.only_elements || []),
     ...(comp.and_elements || [])
   ].filter((e) => VALID_ELEMENTS_SET.has(e));
-  const hintFormula = !q && !restraintElems.length ? extractCleanFormulaHintClient(sampleHint) : '';
-  const effectiveOnlineQuery = q || (source !== 'all' ? hintFormula : '');
+  const orRestraintElems = (comp.or_elements || []).filter((e) => VALID_ELEMENTS_SET.has(e));
+  const notRestraintElems = (comp.not_elements || []).filter((e) => VALID_ELEMENTS_SET.has(e));
+  const hasAnyCompRestraint = Boolean(posRestraintElems.length || orRestraintElems.length);
+  const hintFormula = !q && !cnameQuery && !hasAnyCompRestraint ? extractCleanFormulaHintClient(sampleHint) : '';
+  const effectiveOnlineQuery = q || cnameQuery || (source !== 'all' ? hintFormula : '');
 
-  if ((effectiveOnlineQuery || restraintElems.length) && (source === 'cod' || source === 'optimade' || source === 'all')) {
+  if ((effectiveOnlineQuery || hasAnyCompRestraint) && (source === 'cod' || source === 'optimade' || source === 'all')) {
     const qElems = effectiveOnlineQuery ? extractFormulaElementsClient(effectiveOnlineQuery) : [];
-    const elems = Array.from(new Set([...restraintElems, ...qElems]));
+    const elems = Array.from(new Set([
+      ...(comp.just_elements || []),
+      ...(comp.and_elements || []),
+      ...qElems
+    ])).filter((e) => VALID_ELEMENTS_SET.has(e));
+    const filterParts = [];
+    if (elems.length) {
+      filterParts.push(`elements HAS ALL ${elems.map((e) => `"${e}"`).join(',')}`);
+    } else if ((comp.only_elements || []).length) {
+      const onlyValid = comp.only_elements.filter((e) => VALID_ELEMENTS_SET.has(e));
+      if (onlyValid.length) filterParts.push(`elements HAS ANY ${onlyValid.map((e) => `"${e}"`).join(',')}`);
+    }
+    if (orRestraintElems.length) {
+      filterParts.push(`elements HAS ANY ${orRestraintElems.map((e) => `"${e}"`).join(',')}`);
+    }
+    if (notRestraintElems.length) {
+      filterParts.push(`NOT (elements HAS ANY ${notRestraintElems.map((e) => `"${e}"`).join(',')})`);
+    }
     const exactCount = (comp.just_elements && comp.just_elements.length)
       ? comp.just_elements.length
-      : (!restraintElems.length && parseFormulaStoichiometryClient(effectiveOnlineQuery) ? elems.length : null);
-    let filterExpr = '';
-    if (elems.length) {
-      filterExpr = `elements HAS ALL ${elems.map((e) => `"${e}"`).join(',')}`;
-      if (exactCount) filterExpr += ` AND nelements=${exactCount}`;
-    } else if (effectiveOnlineQuery) {
-      filterExpr = `chemical_formula_descriptive CONTAINS "${effectiveOnlineQuery.replace(/"/g, '')}"`;
+      : (!hasAnyCompRestraint && parseFormulaStoichiometryClient(effectiveOnlineQuery) ? elems.length : null);
+    if (exactCount) {
+      filterParts.push(`nelements=${exactCount}`);
+    } else {
+      if ((comp.only_elements || []).length) {
+        filterParts.push(`nelements<=${comp.only_elements.length}`);
+      }
+      if (comp.min_elements !== null && comp.min_elements !== '' && comp.min_elements !== undefined) {
+        filterParts.push(`nelements>=${Number(comp.min_elements)}`);
+      }
+      if (comp.max_elements !== null && comp.max_elements !== '' && comp.max_elements !== undefined) {
+        filterParts.push(`nelements<=${Number(comp.max_elements)}`);
+      }
+    }
+    if (!filterParts.length && effectiveOnlineQuery) {
+      filterParts.push(`chemical_formula_descriptive CONTAINS "${effectiveOnlineQuery.replace(/"/g, '')}"`);
+    }
+    const filterExpr = filterParts.join(' AND ');
+
+    const primaryEndpoints = [];
+    const fallbackCodEndpoints = [];
+    if (source === 'cod') {
+      primaryEndpoints.push(['COD', 'https://www.crystallography.net/cod/optimade/v1/structures']);
+      fallbackCodEndpoints.push(
+        ['COD / MC3D', 'https://optimade.materialscloud.org/main/mc3d-pbe-v1/v1/structures'],
+        ['COD / Alexandria', 'https://alexandria.icams.rub.de/pbe/v1/structures']
+      );
+    } else if (source === 'optimade') {
+      primaryEndpoints.push(
+        ['Materials Cloud', 'https://optimade.materialscloud.org/main/mc3d-pbe-v1/v1/structures'],
+        ['Alexandria', 'https://alexandria.icams.rub.de/pbe/v1/structures']
+      );
+    } else {
+      primaryEndpoints.push(
+        ['COD', 'https://www.crystallography.net/cod/optimade/v1/structures'],
+        ['Materials Cloud', 'https://optimade.materialscloud.org/main/mc3d-pbe-v1/v1/structures'],
+        ['Alexandria', 'https://alexandria.icams.rub.de/pbe/v1/structures']
+      );
     }
 
-    const endpoints = [];
-    if (source === 'cod' || source === 'all') {
-      endpoints.push(['COD', 'https://www.crystallography.net/cod/optimade/v1/structures']);
-    }
-    if (source === 'optimade' || source === 'all') {
-      endpoints.push(['Materials Cloud', 'https://optimade.materialscloud.org/main/mc3d-pbe-v1/v1/structures']);
-    }
+    const cross3 = (u, v) => [
+      u[1] * v[2] - u[2] * v[1],
+      u[2] * v[0] - u[0] * v[2],
+      u[0] * v[1] - u[1] * v[0]
+    ];
+    const dot3 = (u, v) => u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
+    const norm3 = (v) => Math.sqrt(dot3(v, v));
+    const wrap01 = (v) => ((v % 1) + 1) % 1;
 
-    const remoteHits = [];
-    for (const [providerName, url] of endpoints) {
-      if (!filterExpr) continue;
+    const fetchProviderStructures = async (providerName, url) => {
+      if (!filterExpr) return [];
+      const hits = [];
       try {
-        const resp = await fetch(`${url}?filter=${encodeURIComponent(filterExpr)}&page_limit=6`);
-        if (!resp.ok) continue;
+        const fetchOpts = (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function')
+          ? { signal: AbortSignal.timeout(providerName === 'COD' ? 3500 : 8000) }
+          : {};
+        const resp = await fetch(`${url}?filter=${encodeURIComponent(filterExpr)}&page_limit=10`, fetchOpts);
+        if (!resp.ok) return [];
         const payload = await resp.json();
         for (const item of payload.data || []) {
           const attrs = item.attributes || {};
           const vecs = attrs.lattice_vectors;
           if (!vecs || vecs.length !== 3) continue;
-          const norm = (v) => Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
-          const dot = (u, v) => u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
-          const a = norm(vecs[0]), b = norm(vecs[1]), c = norm(vecs[2]);
+          const va = vecs[0], vb = vecs[1], vc = vecs[2];
+          const a = norm3(va), b = norm3(vb), c = norm3(vc);
           if (a <= 0 || b <= 0 || c <= 0) continue;
-          const alpha = (Math.acos(Math.min(1, Math.max(-1, dot(vecs[1], vecs[2]) / (b * c)))) * 180) / Math.PI;
-          const beta = (Math.acos(Math.min(1, Math.max(-1, dot(vecs[0], vecs[2]) / (a * c)))) * 180) / Math.PI;
-          const gamma = (Math.acos(Math.min(1, Math.max(-1, dot(vecs[0], vecs[1]) / (a * b)))) * 180) / Math.PI;
+          const alpha = (Math.acos(Math.min(1, Math.max(-1, dot3(vb, vc) / (b * c)))) * 180) / Math.PI;
+          const beta = (Math.acos(Math.min(1, Math.max(-1, dot3(va, vc) / (a * c)))) * 180) / Math.PI;
+          const gamma = (Math.acos(Math.min(1, Math.max(-1, dot3(va, vb) / (a * b)))) * 180) / Math.PI;
 
           const cell = {
             a: Number(a.toFixed(4)), b: Number(b.toFixed(4)), c: Number(c.toFixed(4)),
             alpha: Number(alpha.toFixed(2)), beta: Number(beta.toFixed(2)), gamma: Number(gamma.toFixed(2))
           };
-          const system = Math.abs(gamma - 120) < 0.5 ? 'Hexagonal' : Math.abs(a - b) < 0.01 && Math.abs(b - c) < 0.01 ? 'Cubic' : Math.abs(a - b) < 0.01 ? 'Tetragonal' : 'Orthorhombic';
-          let peaks = computeDSpacingsClient(system, cell, 1.5406, 5.0, 85.0, 5);
-          peaks = peaks.sort((x, y) => y.intensity - x.intensity).slice(0, 24).sort((x, y) => x.two_theta - y.two_theta);
-          const formula = String(attrs.chemical_formula_reduced || attrs.chemical_formula_descriptive || effectiveOnlineQuery || 'Phase').replace(/^[-\s]+|[-\s]+$/g, '');
-          const prefix = providerName === 'COD' ? 'COD' : 'OPT';
-          remoteHits.push({
-            id: `${prefix}-${item.id}`,
-            jcpds: `${prefix} ${item.id}`,
-            cod_id: String(item.id),
+          const sgSym = String(
+            attrs.space_group_symbol_hermann_mauguin ||
+            attrs.space_group_symbol_hall ||
+            ''
+          ).trim();
+          const system = normalizeCrystalSystemClient('', sgSym, cell);
+
+          // Build exact unit-cell fractional atoms from OPTIMADE cartesian_site_positions + species_at_sites
+          const atoms = [];
+          const cartPos = attrs.cartesian_site_positions;
+          const siteSpecies = attrs.species_at_sites;
+          const bCrossC = cross3(vb, vc);
+          const cCrossA = cross3(vc, va);
+          const aCrossB = cross3(va, vb);
+          const signedVol = dot3(va, bCrossC);
+          if (Array.isArray(cartPos) && cartPos.length > 0 && Math.abs(signedVol) > 1e-6) {
+            const spMap = new Map();
+            if (Array.isArray(attrs.species)) {
+              for (const sp of attrs.species) {
+                if (!sp || !sp.name) continue;
+                const syms = Array.isArray(sp.chemical_symbols) ? sp.chemical_symbols : [sp.name];
+                const concs = Array.isArray(sp.concentration) ? sp.concentration : [1.0];
+                let zEff = 0;
+                for (let k = 0; k < syms.length; k++) {
+                  const cVal = Number(concs[k] ?? 1.0);
+                  if (cVal > 0 && syms[k] !== 'vacancy') {
+                    zEff += cleanElementZClient(syms[k]) * cVal;
+                  }
+                }
+                if (zEff > 0) spMap.set(sp.name, zEff);
+              }
+            }
+            for (let idx = 0; idx < cartPos.length; idx++) {
+              const r = cartPos[idx];
+              if (!Array.isArray(r) || r.length < 3) continue;
+              const spLabel = Array.isArray(siteSpecies) && siteSpecies[idx] ? siteSpecies[idx] : 'Si';
+              const zEff = spMap.has(spLabel) ? spMap.get(spLabel) : cleanElementZClient(spLabel);
+              atoms.push({
+                z: zEff,
+                occ: 1.0,
+                x: wrap01(dot3(r, bCrossC) / signedVol),
+                y: wrap01(dot3(r, cCrossA) / signedVol),
+                zFrac: wrap01(dot3(r, aCrossB) / signedVol)
+              });
+            }
+          }
+
+          let peaks = atoms.length ? computeStructureFactorPeaksClient(cell, system, atoms, 1.5406, 5.0, 85.0, 45) : [];
+          if (!peaks.length) {
+            peaks = computeDSpacingsClient(system, cell, 1.5406, 5.0, 85.0, 5);
+            peaks = peaks.sort((x, y) => y.intensity - x.intensity).slice(0, 24).sort((x, y) => x.two_theta - y.two_theta);
+          }
+
+          const formula = String(
+            attrs.chemical_formula_reduced ||
+            attrs.chemical_formula_descriptive ||
+            effectiveOnlineQuery ||
+            'Phase'
+          ).replace(/^[-\s]+|[-\s]+$/g, '');
+
+          const srcDb = String(attrs._mcloud_source_db || '').toLowerCase();
+          const srcDbId = String(attrs._mcloud_source_db_id || '').trim();
+          const mc3dId = String(attrs._mcloud_mc3d_id || '').trim();
+          const rawItemId = String(item.id || '').trim();
+          const shortRawId = rawItemId.length > 14 ? rawItemId.slice(0, 8) : rawItemId;
+
+          let cardId, jcpdsLabel, codIdVal;
+          if (providerName === 'COD' || (srcDb === 'cod' && srcDbId)) {
+            const cid = srcDb === 'cod' && srcDbId ? srcDbId : shortRawId;
+            cardId = `COD-${cid}`;
+            jcpdsLabel = `COD ${cid}`;
+            codIdVal = cid;
+          } else if (providerName.startsWith('COD')) {
+            const cid = mc3dId ? mc3dId.toUpperCase() : shortRawId;
+            cardId = `COD-${cid}`;
+            jcpdsLabel = `COD ${cid}`;
+            codIdVal = cid;
+          } else {
+            const oid = mc3dId ? mc3dId.toUpperCase() : shortRawId;
+            cardId = `OPT-${oid}`;
+            jcpdsLabel = `OPT ${oid}`;
+            codIdVal = oid;
+          }
+
+          hits.push({
+            id: cardId,
+            jcpds: jcpdsLabel,
+            cod_id: codIdVal,
             name: `${formula} (${providerName})`,
             formula,
             system,
-            space_group: system,
+            space_group: sgSym || system,
             cell,
+            volume: Number(attrs._mcloud_cell_volume || 0) || computeCellVolumeClient(cell, system),
             peaks,
             source: providerName
           });
         }
       } catch (_) {}
+      return hits;
+    };
+
+    const remoteHits = [];
+    for (const [providerName, url] of primaryEndpoints) {
+      const h = await fetchProviderStructures(providerName, url);
+      remoteHits.push(...h);
+    }
+    if (!remoteHits.length && fallbackCodEndpoints.length) {
+      for (const [providerName, url] of fallbackCodEndpoints) {
+        const h = await fetchProviderStructures(providerName, url);
+        remoteHits.push(...h);
+        if (remoteHits.length >= 8) break;
+      }
     }
 
     if (remoteHits.length > 0) {
-      results.push(...filterPhasesByRestraintsClient(remoteHits, state.restraints, q));
-    } else if (results.length === 0) {
+      filterPhasesByRestraintsClient(remoteHits, state.restraints, q).forEach(pushResult);
+    } else if (resultsMap.size === 0) {
       const seedFallback = SEED_PHASES.map((p) => ({
         ...p,
         id: source === 'cod' ? `COD-${p.cod_id}` : p.id,
         jcpds: source === 'cod' ? `COD ${p.cod_id}` : p.jcpds,
         source: source === 'cod' ? 'COD' : 'RRUFF / ICDD'
       }));
-      results.push(...filterPhasesByRestraintsClient(seedFallback, state.restraints, q || effectiveOnlineQuery));
+      filterPhasesByRestraintsClient(seedFallback, state.restraints, q || effectiveOnlineQuery).forEach(pushResult);
     }
   }
 
-  return results;
+  return Array.from(resultsMap.values());
 }
 
 /* ============================================================================
@@ -2911,12 +3410,27 @@ function stripMatchScoresFromPhase(phase) {
   return rest;
 }
 
+let refreshDbSeq = 0;
+
 function refreshDbViewWithoutMatch() {
+  const seq = ++refreshDbSeq;
   const q = (document.getElementById('dbSearchInput')?.value || '').trim();
   const src = state.dbSource || 'all';
   if (src === 'local' || src === 'all') {
     const baseCards = loadLocalDatabaseClient().map(stripMatchScoresFromPhase);
     state.dbResults = filterPhasesByRestraintsClient(baseCards, state.restraints, q);
+    if (!state.backendAvailable && clientSqStores.length > 0 && (q || hasActiveRestraints())) {
+      queryClientSqStores(q, state.restraints, 200).then((sqHits) => {
+        if (seq !== refreshDbSeq) return;
+        const merged = new Map();
+        state.dbResults.forEach((p) => merged.set(p.id, stripMatchScoresFromPhase(p)));
+        (sqHits || []).forEach((p) => {
+          if (!merged.has(p.id)) merged.set(p.id, stripMatchScoresFromPhase(p));
+        });
+        state.dbResults = Array.from(merged.values());
+        renderDbResults();
+      }).catch(() => {});
+    }
   } else if (src === 'cod') {
     state.dbResults = (state.dbResults || [])
       .filter((p) => String(p.source || '').toLowerCase().includes('cod'))
@@ -2925,7 +3439,7 @@ function refreshDbViewWithoutMatch() {
     state.dbResults = (state.dbResults || [])
       .filter((p) => {
         const s = String(p.source || '').toLowerCase();
-        return s.includes('optimade') || s.includes('materials cloud') || s.includes('rruff');
+        return s.includes('optimade') || s.includes('materials cloud') || s.includes('alexandria') || s.includes('rruff');
       })
       .map(stripMatchScoresFromPhase);
   }
@@ -2970,7 +3484,7 @@ async function runSearchMatch(opts = {}) {
     const s = String(p.source || '').toLowerCase();
     if (source === 'local') return s.includes('local') || s.includes('.sq');
     if (source === 'cod') return s.includes('cod');
-    if (source === 'optimade') return s.includes('optimade') || s.includes('materials cloud') || s.includes('rruff');
+    if (source === 'optimade') return s.includes('optimade') || s.includes('materials cloud') || s.includes('alexandria') || s.includes('rruff');
     return true;
   });
 
@@ -3010,14 +3524,23 @@ async function runSearchMatch(opts = {}) {
     }
 
     if (!matches) {
-      let fallbackPool = filterExtrasForSource(state.dbResults);
+      const mergedMap = new Map();
+      filterExtrasForSource(state.dbResults).forEach((p) => mergedMap.set(p.id, p));
+      if ((source === 'local' || source === 'all' || source === 'sq') && clientSqStores.length > 0) {
+        const sqCandidates = await searchClientSqStoresByPeaks(
+          identifiedPeaks,
+          0.45,
+          state.restraints,
+          query,
+          sampleHint
+        );
+        sqCandidates.forEach((p) => mergedMap.set(p.id, p));
+      }
       if (source === 'cod' || source === 'optimade' || source === 'all') {
         const remoteFetched = await queryOnlineDatabasesClient(query, source);
-        const merged = new Map();
-        fallbackPool.forEach((p) => merged.set(p.id, p));
-        remoteFetched.forEach((p) => merged.set(p.id, p));
-        fallbackPool = Array.from(merged.values());
+        remoteFetched.forEach((p) => mergedMap.set(p.id, p));
       }
+      const fallbackPool = Array.from(mergedMap.values());
       matches = searchMatchClient(
         state.pattern.two_theta,
         state.pattern.intensity,
@@ -3026,7 +3549,8 @@ async function runSearchMatch(opts = {}) {
         identifiedPeaks,
         state.restraints,
         query,
-        source
+        source,
+        sampleHint
       );
     }
 
@@ -4281,11 +4805,65 @@ function crc32(buf) {
 let compSummaryBoxEl = null;
 let ptableElementBtnMap = new Map();
 let sqlJsEnginePromise = null;
+let clientSqStores = [];
+let clientPdf2DatFile = null;
+let bundledStaticSqPhases = [];
+
+function disposeClientSqStores() {
+  for (const st of clientSqStores) {
+    if (st && st.db) {
+      try { st.db.close(); } catch (_) {}
+      st.db = null;
+    }
+  }
+  clientSqStores = [];
+  clientPdf2DatFile = null;
+}
+
+async function loadBundledSampleSqStatic() {
+  if (bundledStaticSqPhases.length > 0) return;
+  const candidateUrls = ['./sample_data/pdf2-1.sq', 'sample_data/pdf2-1.sq'];
+  for (const url of candidateUrls) {
+    try {
+      const resp = await fetch(url);
+      if (!resp.ok) continue;
+      const buf = await resp.arrayBuffer();
+      if (!buf || buf.byteLength < 64) continue;
+      const tempStore = await openClientSqStore({
+        name: 'pdf2-1.sq',
+        size: buf.byteLength,
+        arrayBuffer: () => Promise.resolve(buf)
+      }, null, 500);
+      if (tempStore && Array.isArray(tempStore.previewPhases) && tempStore.previewPhases.length > 0) {
+        bundledStaticSqPhases = tempStore.previewPhases.map((p) => enrichPhaseClient({
+          ...p,
+          source: 'Local DB (Sample SQ)'
+        }));
+      }
+      if (tempStore && tempStore.db) {
+        try { tempStore.db.close(); } catch (_) {}
+      }
+      if (
+        bundledStaticSqPhases.length > 0 &&
+        !(state.sqIndex.files && state.sqIndex.files.length) &&
+        (state.dbSource === 'local' || state.dbSource === 'all') &&
+        !(state.dbResults || []).some((p) => p && p.fom !== undefined)
+      ) {
+        refreshDbViewWithoutMatch();
+      }
+      return;
+    } catch (_) {}
+  }
+}
 
 async function initBackendAndSqStatus() {
   try {
     const resp = await fetch('/api/database/sq-status');
-    if (!resp.ok) return;
+    if (!resp.ok) {
+      state.backendAvailable = false;
+      await loadBundledSampleSqStatic();
+      return;
+    }
     const data = await resp.json();
     state.backendAvailable = true;
     state.desktopDir = data.desktop_dir || '';
@@ -4302,6 +4880,7 @@ async function initBackendAndSqStatus() {
     }
   } catch (_) {
     state.backendAvailable = false;
+    await loadBundledSampleSqStatic();
   }
 }
 
@@ -4341,8 +4920,9 @@ function updateSqStatusBoxUI(statusObj, errorMsg = '') {
   if (files.length > 0) {
     box.classList.add('ok');
     const summary = files.map((f) => `${f.name} (${f.cards ?? '?'} cards)`).join(', ');
+    const datNote = !state.backendAvailable && clientPdf2DatFile ? ' + PDF2.DAT (cells/hkl)' : '';
     const fullNote = state.sqIndex.rawPath ? ` — ${state.sqIndex.rawPath}` : '';
-    box.textContent = `Indexed local database: ${summary}${fullNote}`;
+    box.textContent = `Indexed local database: ${summary}${datNote}${fullNote}`;
   } else {
     box.textContent = 'No external .sq / folder indexed yet (using built-in database/).';
   }
@@ -4377,14 +4957,15 @@ function renderClientSqBrowserFallback() {
   if (!files.length) {
     const row = document.createElement('div');
     row.className = 'sq-item';
-    row.textContent = 'Select a local .sq file (e.g. pdf2-2.sq) or folder above.';
+    row.textContent = 'Select a local .sq file (e.g. pdf2-2.sq) or PDF2 folder above to index all cards in WebAssembly.';
     list.appendChild(row);
     return;
   }
   files.forEach((f) => {
     const row = document.createElement('div');
     row.className = 'sq-item';
-    row.innerHTML = `<span>🗄️ ${escapeHtml(f.name)}</span><span class="sq-item-meta">${f.cards || 0} cards (loaded)</span>`;
+    const datBadge = clientPdf2DatFile ? ' • +PDF2.DAT' : '';
+    row.innerHTML = `<span>🗄️ ${escapeHtml(f.name)}</span><span class="sq-item-meta">${f.cards || 0} cards indexed${datBadge}</span>`;
     list.appendChild(row);
   });
 }
@@ -4546,9 +5127,22 @@ async function applySqPath(rawPathInput = null, expectedSize = null) {
     return;
   }
   if (!state.backendAvailable) {
+    const activeFiles = state.sqIndex.files || [];
+    const pathBase = pathVal.split(/[\\/]/).pop().toLowerCase();
+    if (
+      activeFiles.length > 0 &&
+      (pathVal.toLowerCase() === String(state.sqIndex.rawPath || '').toLowerCase() ||
+        activeFiles.some((f) => String(f.name || '').toLowerCase() === pathBase))
+    ) {
+      updateSqStatusBoxUI({ files: activeFiles });
+      activateDbSourcePill('local');
+      refreshDbViewWithoutMatch();
+      showToast(`Active in browser WASM: ${state.sqIndex.rawPath} (${state.sqIndex.totalCards} cards)`, 'ok', 2800);
+      return;
+    }
     updateSqStatusBoxUI(
       null,
-      'Direct filesystem path access requires the Python server. Use "Browse .sq File..." to load .sq directly in browser.'
+      'Static Browser Mode cannot read raw OS path strings directly due to browser security. Click "Browse .sq File..." or "Browse Local Folder..." above to index your full .sq / PDF2 folder in WebAssembly.'
     );
     return;
   }
@@ -4596,6 +5190,7 @@ async function applySqPath(rawPathInput = null, expectedSize = null) {
 }
 
 async function clearSqIndex() {
+  disposeClientSqStores();
   state.sqIndex = { rawPath: '', files: [], totalCards: 0, clientPhases: [] };
   document.getElementById('sqPathInput').value = '';
   if (state.backendAvailable) {
@@ -4612,27 +5207,69 @@ async function clearSqIndex() {
     } catch (_) {}
   } else {
     updateSqStatusBoxUI(null);
+    renderClientSqBrowserFallback();
   }
   updateDbFolderPathUI();
   refreshDbViewWithoutMatch();
 }
 
+function deduplicatePdfSiblingSqFilesClient(sqFiles) {
+  if (!sqFiles || sqFiles.length <= 1) return sqFiles || [];
+  const groups = new Map();
+  const standalone = [];
+  for (const f of sqFiles) {
+    const relDir = f.webkitRelativePath
+      ? f.webkitRelativePath.split('/').slice(0, -1).join('/').toLowerCase()
+      : '';
+    const m = f.name.match(/^(pdf\d*)-(\d+)\.sq$/i);
+    if (m) {
+      const key = `${relDir}::${m[1].toLowerCase()}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push({ file: f, idx: parseInt(m[2], 10) });
+    } else {
+      standalone.push(f);
+    }
+  }
+  const kept = [...standalone];
+  for (const arr of groups.values()) {
+    arr.sort((a, b) => a.idx - b.idx);
+    const baseSize = arr[0].file.size || 0;
+    const allSameSize = baseSize > 0 && arr.every((x) => Math.abs((x.file.size || 0) - baseSize) / baseSize < 0.05);
+    if (allSameSize) {
+      kept.push(arr[0].file);
+    } else {
+      arr.forEach((x) => kept.push(x.file));
+    }
+  }
+  return kept;
+}
+
 async function handleSqFileObjects(fileList, folderHint = '') {
   const allArr = Array.from(fileList || []);
-  const sqFiles = allArr.filter((f) => /\.(sq|sqlite|sqlite3|db)$/i.test(f.name));
+  const rawSqFiles = allArr.filter((f) => /\.(sq|sqlite|sqlite3|db)$/i.test(f.name));
   const cifJsonFiles = allArr.filter((f) => /\.(cif|json)$/i.test(f.name) && f.name.toLowerCase() !== 'sq_index.cfg');
-  if (!sqFiles.length && !cifJsonFiles.length) {
+  const datCandidate = allArr.find((f) => f.name.toLowerCase() === 'pdf2.dat') || null;
+  if (!rawSqFiles.length && !cifJsonFiles.length) {
+    if (datCandidate && !state.backendAvailable && clientSqStores.length > 0) {
+      clientPdf2DatFile = datCandidate;
+      state.sqIndex.clientPhases = await enrichPhasesFromPdf2DatClient(state.sqIndex.clientPhases || [], clientPdf2DatFile);
+      updateSqStatusBoxUI({ files: state.sqIndex.files });
+      renderClientSqBrowserFallback();
+      refreshDbViewWithoutMatch();
+      showToast('Attached companion PDF2.DAT (unit cells & Miller hkl enabled)', 'ok', 3000);
+      return;
+    }
     updateSqStatusBoxUI(null, 'No .sq, .cif, or .json database files were found in the selection.');
     return;
   }
 
   if (state.backendAvailable) {
     // First resolve directly on local disk by relative path + exact byte size (preserves companion PDF2.DAT & avoids huge uploads!)
-    const primaryFile = sqFiles[0] || cifJsonFiles[0];
+    const primaryFile = rawSqFiles[0] || cifJsonFiles[0];
     const relCandidate = folderHint || (primaryFile.webkitRelativePath
       ? primaryFile.webkitRelativePath.split('/')[0]
       : primaryFile.name);
-    const expSize = (!folderHint && sqFiles.length === 1) ? sqFiles[0].size : null;
+    const expSize = (!folderHint && rawSqFiles.length === 1) ? rawSqFiles[0].size : null;
     try {
       const reqBody = { path: relCandidate };
       if (expSize) reqBody.expected_size = expSize;
@@ -4658,7 +5295,7 @@ async function handleSqFileObjects(fileList, folderHint = '') {
     } catch (_) {}
 
     // If only .cif/.json files were selected from an external drive not auto-discovered, import via /api/database/upload
-    if (!sqFiles.length && cifJsonFiles.length) {
+    if (!rawSqFiles.length && cifJsonFiles.length) {
       const fdCif = new FormData();
       cifJsonFiles.forEach((cf) => fdCif.append('files', cf));
       try {
@@ -4674,7 +5311,8 @@ async function handleSqFileObjects(fileList, folderHint = '') {
     }
 
     // Otherwise upload .sq file(s) to the server's database/ directory and index them
-    for (const file of sqFiles) {
+    const dedupSq = deduplicatePdfSiblingSqFilesClient(rawSqFiles);
+    for (const file of dedupSq) {
       const fd = new FormData();
       fd.append('file', file);
       try {
@@ -4701,51 +5339,110 @@ async function handleSqFileObjects(fileList, folderHint = '') {
     return;
   }
 
-  // Client-only static mode: parse .sq SQLite3 via on-demand sql.js WASM or JSON fallback
-  const allLoaded = [];
+  // Client-only Static Browser Mode: keep full SQLite WASM stores + Hanawalt float32 index + optional zero-RAM PDF2.DAT
+  const sqFiles = deduplicatePdfSiblingSqFilesClient(rawSqFiles);
+  const statusBox = document.getElementById('sqStatusBox');
+  if (statusBox) {
+    statusBox.classList.remove('ok', 'err');
+    statusBox.textContent = `Indexing ${sqFiles.map((f) => f.name).join(', ') || `${cifJsonFiles.length} CIF/JSON file(s)`} in WebAssembly...`;
+  }
+
+  disposeClientSqStores();
+  clientPdf2DatFile = datCandidate;
+
+  const previewPhases = [];
   const fileSummaries = [];
+  let totalIndexedCards = 0;
+
   for (const file of sqFiles) {
     try {
-      const parsedPhases = await parseSqFileClient(file);
-      allLoaded.push(...parsedPhases);
-      fileSummaries.push({ name: file.name, path: file.name, cards: parsedPhases.length });
+      const store = await openClientSqStore(file, clientPdf2DatFile, 150);
+      clientSqStores.push(store);
+      previewPhases.push(...(store.previewPhases || []));
+      totalIndexedCards += store.totalCards || 0;
+      fileSummaries.push({ name: file.name, path: file.name, cards: store.totalCards || 0 });
     } catch (err) {
+      disposeClientSqStores();
       updateSqStatusBoxUI(null, `Could not parse ${file.name}: ${err.message || err}`);
       return;
     }
   }
-  state.sqIndex.rawPath = fileSummaries.map((f) => f.name).join(', ');
+
+  // Also parse any .cif / .json files selected directly or inside a browsed folder
+  let cifJsonLoadedCount = 0;
+  for (const cf of cifJsonFiles) {
+    try {
+      const txt = await cf.text();
+      if (/\.cif$/i.test(cf.name)) {
+        const parsed = parseCifClient(txt, cf.name.replace(/\.cif$/i, ''));
+        if (parsed) {
+          previewPhases.push(enrichPhaseClient({ ...parsed, source: `Local CIF (${cf.name})` }));
+          cifJsonLoadedCount++;
+        }
+      } else {
+        const jData = JSON.parse(txt);
+        const arr = Array.isArray(jData) ? jData : (jData.phases || [jData]);
+        for (const item of arr) {
+          if (item && (item.formula || item.name || item.peaks)) {
+            previewPhases.push(enrichPhaseClient({ ...item, source: `Local JSON (${cf.name})` }));
+            cifJsonLoadedCount++;
+          }
+        }
+      }
+    } catch (_) {}
+  }
+  if (cifJsonLoadedCount > 0) {
+    totalIndexedCards += cifJsonLoadedCount;
+    fileSummaries.push({
+      name: folderHint ? `${folderHint} (CIF/JSON)` : `${cifJsonFiles.length} CIF/JSON file(s)`,
+      path: folderHint || cifJsonFiles[0].name,
+      cards: cifJsonLoadedCount
+    });
+  }
+
+  state.sqIndex.rawPath = folderHint || fileSummaries.map((f) => f.name).join(', ');
   state.sqIndex.files = fileSummaries;
-  state.sqIndex.totalCards = allLoaded.length;
-  state.sqIndex.clientPhases = allLoaded;
+  state.sqIndex.totalCards = totalIndexedCards;
+  state.sqIndex.clientPhases = previewPhases;
   document.getElementById('sqPathInput').value = state.sqIndex.rawPath;
   updateDbFolderPathUI();
   updateSqStatusBoxUI({ files: fileSummaries });
   renderClientSqBrowserFallback();
   activateDbSourcePill('local');
   refreshDbViewWithoutMatch();
+  const datToast = clientPdf2DatFile ? ' + PDF2.DAT' : '';
+  showToast(`Indexed ${state.sqIndex.rawPath} (${totalIndexedCards} cards${datToast})`, 'ok', 3200);
 }
 
 function loadSqlJsOnDemand() {
   if (sqlJsEnginePromise) return sqlJsEnginePromise;
+  const cdnBases = [
+    'https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3',
+    'https://cdn.jsdelivr.net/npm/sql.js@1.10.3/dist'
+  ];
   sqlJsEnginePromise = new Promise((resolve, reject) => {
-    const initEngine = () => {
+    const initWithBase = (baseUrl) => {
       window.initSqlJs({
-        locateFile: (fname) => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/${fname}`
+        locateFile: (fname) => `${baseUrl}/${fname}`
       }).then(resolve).catch(reject);
     };
     if (typeof window.initSqlJs === 'function') {
-      initEngine();
+      initWithBase(cdnBases[0]);
       return;
     }
-    const script = document.createElement('script');
-    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.js';
-    script.onload = initEngine;
-    script.onerror = () => {
-      sqlJsEnginePromise = null;
-      reject(new Error('Could not load SQLite WASM engine in offline static mode'));
+    const tryLoadScript = (idx) => {
+      if (idx >= cdnBases.length) {
+        sqlJsEnginePromise = null;
+        reject(new Error('Could not load SQLite WASM engine in static mode'));
+        return;
+      }
+      const script = document.createElement('script');
+      script.src = `${cdnBases[idx]}/sql-wasm.js`;
+      script.onload = () => initWithBase(cdnBases[idx]);
+      script.onerror = () => tryLoadScript(idx + 1);
+      document.head.appendChild(script);
     };
-    document.head.appendChild(script);
+    tryLoadScript(0);
   });
   return sqlJsEnginePromise;
 }
@@ -4779,7 +5476,385 @@ function decodeSqNumsClient(val) {
   return m ? m.map(Number) : [];
 }
 
-async function parseSqFileClient(file) {
+function decodeSqHklsClient(val, count) {
+  const empty = () => Array.from({ length: count }, () => [0, 0, 0]);
+  if (val === null || val === undefined || count <= 0) return empty();
+  const s = val instanceof Uint8Array
+    ? new TextDecoder('utf-8', { fatal: false }).decode(val).trim()
+    : String(val).trim();
+  if (!s) return empty();
+  if (s.startsWith('[')) {
+    try {
+      const arr = JSON.parse(s);
+      if (Array.isArray(arr)) {
+        return Array.from({ length: count }, (_, i) =>
+          Array.isArray(arr[i]) && arr[i].length >= 3 ? arr[i].slice(0, 3).map((x) => parseInt(x, 10) || 0) : [0, 0, 0]
+        );
+      }
+    } catch (_) {}
+  }
+  const groups = s.split(/[;|/]+/).map((g) => g.trim()).filter(Boolean);
+  if (groups.length === count) {
+    return groups.map((g) => {
+      const ints = (g.match(/[-+]?\d+/g) || []).map((x) => parseInt(x, 10));
+      return ints.length >= 3 ? ints.slice(0, 3) : [0, 0, 0];
+    });
+  }
+  const allInts = (s.match(/[-+]?\d+/g) || []).map((x) => parseInt(x, 10));
+  if (allInts.length >= count * 3) {
+    return Array.from({ length: count }, (_, i) => [allInts[3 * i], allInts[3 * i + 1], allInts[3 * i + 2]]);
+  }
+  return empty();
+}
+
+function inferCrystalSystemFromSpaceGroupClient(sg) {
+  const s = String(sg || '').replace(/\s+/g, '').trim();
+  if (!s) return '';
+  if (/[-]?3[mncd]|23$|432$|[-]?43[mn]/i.test(s) && !/^(R|P3|P-3|P6|H)/i.test(s)) return 'Cubic';
+  if ((s[0] === 'P' || s[0] === 'I') && s.slice(0, 4).includes('4')) return 'Tetragonal';
+  if (/^(P6|P-6|R|P3|P-3)/i.test(s)) return 'Hexagonal';
+  if (/^(P21\/c|P21\/n|P21\/m|P2\/m|P2\/c|C2\/|I2\/|Cc|Cm|Pc|Pm|P21|C2)/i.test(s)) return 'Monoclinic';
+  if (s === 'P1' || s === 'P-1') return 'Triclinic';
+  if (/^[PCIFAB]/i.test(s) && s.length >= 3) return 'Orthorhombic';
+  return '';
+}
+
+function normalizeCrystalSystemClient(rawSys, spaceGroup = '', cell = null) {
+  const s = String(rawSys || '').trim().toLowerCase();
+  const sysMap = {
+    c: 'Cubic', cub: 'Cubic', cubic: 'Cubic', isometric: 'Cubic',
+    t: 'Tetragonal', tet: 'Tetragonal', tetragonal: 'Tetragonal',
+    h: 'Hexagonal', hex: 'Hexagonal', hexagonal: 'Hexagonal',
+    r: 'Trigonal', trig: 'Trigonal', trigonal: 'Trigonal', rhombohedral: 'Trigonal',
+    o: 'Orthorhombic', ort: 'Orthorhombic', orthorhombic: 'Orthorhombic',
+    m: 'Monoclinic', mon: 'Monoclinic', monoclinic: 'Monoclinic',
+    a: 'Triclinic', tc: 'Triclinic', triclinic: 'Triclinic', anorthic: 'Triclinic'
+  };
+  if (sysMap[s]) return sysMap[s];
+  for (const [k, v] of Object.entries(sysMap)) {
+    if (k.length > 2 && s.includes(k)) return v;
+  }
+  const fromSg = inferCrystalSystemFromSpaceGroupClient(spaceGroup);
+  if (fromSg) return fromSg;
+  if (cell && Number(cell.a) > 0) {
+    const a = Number(cell.a || 4), b = Number(cell.b || a), c = Number(cell.c || a);
+    const al = Number(cell.alpha || 90), be = Number(cell.beta || 90), ga = Number(cell.gamma || 90);
+    if (Math.abs(al - 90) < 0.3 && Math.abs(be - 90) < 0.3 && Math.abs(ga - 120) < 0.4) return 'Hexagonal';
+    if (Math.abs(a - b) < 0.015 && Math.abs(b - c) < 0.015 && Math.abs(al - 90) < 0.3 && Math.abs(be - 90) < 0.3 && Math.abs(ga - 90) < 0.3) return 'Cubic';
+    if (Math.abs(a - b) < 0.015 && Math.abs(al - 90) < 0.3 && Math.abs(be - 90) < 0.3 && Math.abs(ga - 90) < 0.3) return 'Tetragonal';
+    if (Math.abs(al - 90) < 0.3 && Math.abs(be - 90) < 0.3 && Math.abs(ga - 90) < 0.3) return 'Orthorhombic';
+    if (Math.abs(al - 90) < 0.3 && Math.abs(ga - 90) < 0.3) return 'Monoclinic';
+    return 'Triclinic';
+  }
+  return 'Orthorhombic';
+}
+
+function compactSqFormulaClient(rawFormula) {
+  const clean = String(rawFormula || '').replace(/!/g, '·').trim();
+  if (!clean) return '';
+  return clean
+    .split('·')
+    .map((part) => part.trim().replace(/\s+/g, ''))
+    .filter(Boolean)
+    .join('·');
+}
+
+function parseJcpdsToSqIntClient(token) {
+  const t = String(token || '').trim();
+  const m3 = t.match(/^(\d{2})-(\d{2,3})-(\d{4})$/);
+  if (m3) return parseInt(m3[2], 10) * 10000 + parseInt(m3[3], 10);
+  const m2 = t.match(/^(\d{1,3})-(\d{4})$/);
+  if (m2) return parseInt(m2[1], 10) * 10000 + parseInt(m2[2], 10);
+  if (/^\d+$/.test(t)) {
+    const n = parseInt(t, 10);
+    if (n >= 10001 && n <= 999999) return n;
+  }
+  return null;
+}
+
+async function enrichPhasesFromPdf2DatClient(phases, datFile, wavelength = 1.5406) {
+  if (!datFile || !Array.isArray(phases) || !phases.length) return phases || [];
+  const sysCodes = {
+    C: 'Cubic',
+    T: 'Tetragonal',
+    H: 'Hexagonal',
+    R: 'Hexagonal',
+    O: 'Orthorhombic',
+    M: 'Monoclinic',
+    A: 'Triclinic'
+  };
+  const safeF = (sub, defV = 0) => {
+    const s = String(sub || '').trim();
+    if (!s) return defV;
+    const v = parseFloat(s);
+    return Number.isFinite(v) ? v : defV;
+  };
+
+  const out = [];
+  for (const rawPhase of phases) {
+    const nrec = Number(rawPhase && rawPhase._nrec ? rawPhase._nrec : 0);
+    if (nrec <= 0) {
+      out.push(rawPhase);
+      continue;
+    }
+    try {
+      const startByte = (nrec - 1) * 80;
+      if (startByte < 0 || startByte >= datFile.size) {
+        out.push(rawPhase);
+        continue;
+      }
+      const chunkText = await datFile.slice(startByte, Math.min(datFile.size, startByte + 9680)).text();
+      if (chunkText.length < 80) {
+        out.push(rawPhase);
+        continue;
+      }
+      const first = chunkText.slice(0, 80);
+      const cardKey = first.slice(72, 78);
+      const lines = [first];
+      for (let off = 80; off + 80 <= chunkText.length; off += 80) {
+        const ln = chunkText.slice(off, off + 80);
+        if (ln.slice(72, 78) !== cardKey) break;
+        lines.push(ln);
+      }
+
+      const updated = { ...rawPhase };
+      const sysChar = (first[78] || '').toUpperCase();
+      if (sysCodes[sysChar]) updated.system = sysCodes[sysChar];
+
+      const a = safeF(first.slice(0, 9), 0);
+      let b = safeF(first.slice(9, 18), 0);
+      let c = safeF(first.slice(18, 27), 0);
+      const al = safeF(first.slice(27, 35), 90);
+      const be = safeF(first.slice(35, 43), 90);
+      let ga = safeF(first.slice(43, 51), 90);
+      if (a > 0) {
+        b = b || a;
+        c = c || a;
+        if ((sysChar === 'H' || sysChar === 'R') && ga === 90) ga = 120;
+        updated.cell = {
+          a: Number(a.toFixed(4)),
+          b: Number(b.toFixed(4)),
+          c: Number(c.toFixed(4)),
+          alpha: Number(al.toFixed(2)),
+          beta: Number(be.toFixed(2)),
+          gamma: Number(ga.toFixed(2))
+        };
+      }
+
+      const datPeaks = [];
+      for (const ln of lines) {
+        const recType = ln[79];
+        if (recType === '4') {
+          const sgS = ln.slice(0, 11).trim();
+          if (sgS) updated.space_group = sgS;
+          const dx = safeF(ln.slice(38, 46), 0);
+          const vol = safeF(ln.slice(64, 71), 0);
+          if (dx > 0) updated.density = Number(dx.toFixed(3));
+          if (vol > 0) updated.volume = Number(vol.toFixed(2));
+        } else if (recType === 'I') {
+          for (const segOff of [0, 23, 46]) {
+            const seg = ln.slice(segOff, segOff + 23);
+            if (seg.length < 10 || !seg.slice(0, 7).trim()) continue;
+            const dV = safeF(seg.slice(0, 7), 0);
+            const intS = seg.slice(7, 10).replace(/[^0-9.]/g, '');
+            const iV = intS ? parseFloat(intS) : 1.0;
+            const hklInts = (seg.slice(10, 20).match(/[-+]?\d+/g) || []).map((x) => parseInt(x, 10));
+            const hkl = hklInts.length >= 3 ? hklInts.slice(0, 3) : [0, 0, 0];
+            if (dV > 0) {
+              const sTh = wavelength / (2.0 * dV);
+              if (sTh > 0 && sTh < 0.998) {
+                const ttV = (2.0 * Math.asin(sTh) * 180.0) / Math.PI;
+                if (ttV >= 2.0 && ttV <= 140.0) {
+                  datPeaks.push({
+                    two_theta: Number(ttV.toFixed(3)),
+                    d: Number(dV.toFixed(4)),
+                    intensity: Number(iV.toFixed(1)),
+                    hkl
+                  });
+                }
+              }
+            }
+          }
+        }
+      }
+      if (datPeaks.length > 0) {
+        updated.peaks = datPeaks;
+      }
+      out.push(enrichPhaseClient(updated));
+    } catch (_) {
+      out.push(rawPhase);
+    }
+  }
+  return out;
+}
+
+async function materializeSqRowsClient(store, rawRows, colNames, datFile = null) {
+  if (!rawRows || !rawRows.length) return [];
+  const colsLow = {};
+  colNames.forEach((c, idx) => { colsLow[c.toLowerCase()] = idx; });
+  const idxOf = (colName) => (colName ? (colsLow[colName.toLowerCase()] ?? -1) : -1);
+
+  const iId = idxOf(store.idCol);
+  const iForm = idxOf(store.formCol);
+  const iName = idxOf(store.nameCol);
+  const iMin = idxOf(store.minCol);
+  const iSys = idxOf(store.sysCol);
+  const iSg = idxOf(store.sgCol);
+  const iDval = idxOf(store.dCol);
+  const iInt = idxOf(store.intCol);
+  const i2T = idxOf(store.ttCol);
+  const iHkl = idxOf(store.hklCol);
+  const iA = idxOf(store.aCol), iB = idxOf(store.bCol), iC = idxOf(store.cCol);
+  const iAl = idxOf(store.alCol), iBe = idxOf(store.beCol), iGa = idxOf(store.gaCol);
+  const iVol = idxOf(store.volCol);
+  const iDens = idxOf(store.densCol);
+  const iSub = idxOf(store.subCol);
+  const iEl = idxOf(store.elCol);
+  const iNrec = idxOf(store.nrecCol);
+
+  const rowIds = [];
+  if (iId >= 0) {
+    for (const r of rawRows) {
+      if (r[iId] !== null && r[iId] !== undefined) rowIds.push(r[iId]);
+    }
+  }
+
+  const chemByCard = new Map();
+  const subByCard = new Map();
+  if (store.db && rowIds.length > 0) {
+    const chunkSize = 300;
+    if (store.chemTbl && store.chemIdCol && store.chemElCol) {
+      for (let s = 0; s < rowIds.length; s += chunkSize) {
+        const chunk = rowIds.slice(s, s + chunkSize);
+        const marks = chunk.map(() => '?').join(',');
+        const stmt = store.db.prepare(
+          `SELECT "${store.chemIdCol}", "${store.chemElCol}" FROM "${store.chemTbl}" WHERE "${store.chemIdCol}" IN (${marks})`
+        );
+        try {
+          stmt.bind(chunk);
+          while (stmt.step()) {
+            const [cid, el] = stmt.get();
+            const key = String(cid);
+            if (!chemByCard.has(key)) chemByCard.set(key, []);
+            const elStr = String(el || '').trim();
+            if (elStr && !chemByCard.get(key).includes(elStr)) chemByCard.get(key).push(elStr);
+          }
+        } finally {
+          stmt.free();
+        }
+      }
+    }
+    if (store.subTbl && store.subIdCol && store.subSfCol) {
+      for (let s = 0; s < rowIds.length; s += chunkSize) {
+        const chunk = rowIds.slice(s, s + chunkSize);
+        const marks = chunk.map(() => '?').join(',');
+        const stmt = store.db.prepare(
+          `SELECT "${store.subIdCol}", "${store.subSfCol}" FROM "${store.subTbl}" WHERE "${store.subIdCol}" IN (${marks})`
+        );
+        try {
+          stmt.bind(chunk);
+          while (stmt.step()) {
+            const [cid, sf] = stmt.get();
+            const key = String(cid);
+            if (!subByCard.has(key)) subByCard.set(key, []);
+            const sfStr = String(sf || '').trim().toUpperCase();
+            if (sfStr && !subByCard.get(key).includes(sfStr)) subByCard.get(key).push(sfStr);
+          }
+        } finally {
+          stmt.free();
+        }
+      }
+    }
+  }
+
+  const wavelength = 1.5406;
+  const phases = [];
+  for (const row of rawRows) {
+    const rawPid = iId >= 0 && row[iId] !== null && row[iId] !== undefined ? String(row[iId]) : String(phases.length + 1);
+    const pid = formatPdf2JcpdsClient(rawPid, store.isPdfSq);
+    const rawFormula = iForm >= 0 && row[iForm] ? String(row[iForm]).trim() : '';
+    const formula = compactSqFormulaClient(rawFormula);
+    const rawName = iName >= 0 && row[iName] ? String(row[iName]).trim() : '';
+    const minName = iMin >= 0 && row[iMin] ? String(row[iMin]).trim() : '';
+    const baseName = minName && rawName && !rawName.toLowerCase().includes(minName.toLowerCase())
+      ? `${minName} — ${rawName}`
+      : (minName || rawName);
+    const dispName = baseName && formula && !baseName.replace(/\s+/g, '').includes(formula)
+      ? `${baseName} (${formula})`
+      : (baseName || formula || `Card ${pid}`);
+
+    const sgStr = iSg >= 0 && row[iSg] ? String(row[iSg]).trim() : 'P1';
+    const hasExplicitCell = iA >= 0 && Number(row[iA]) > 0;
+    const a = hasExplicitCell ? Number(row[iA]) : 0;
+    const b = (iB >= 0 && Number(row[iB])) || a;
+    const c = (iC >= 0 && Number(row[iC])) || a;
+    const alpha = (iAl >= 0 && Number(row[iAl])) || 90;
+    const beta = (iBe >= 0 && Number(row[iBe])) || 90;
+    const gamma = (iGa >= 0 && Number(row[iGa])) || 90;
+    const cell = hasExplicitCell ? { a, b, c, alpha, beta, gamma } : null;
+    const sysNorm = normalizeCrystalSystemClient(iSys >= 0 && row[iSys] ? row[iSys] : '', sgStr, cell);
+
+    const dList = iDval >= 0 ? decodeSqNumsClient(row[iDval]) : [];
+    const intList = iInt >= 0 ? decodeSqNumsClient(row[iInt]) : [];
+    const ttList = i2T >= 0 ? decodeSqNumsClient(row[i2T]) : [];
+    const nPk = Math.max(dList.length, ttList.length);
+    const hklList = iHkl >= 0 ? decodeSqHklsClient(row[iHkl], nPk) : Array.from({ length: nPk }, () => [0, 0, 0]);
+    let peaks = [];
+    for (let k = 0; k < nPk; k++) {
+      let dv = k < dList.length ? dList[k] : 0;
+      let ttv = k < ttList.length ? ttList[k] : 0;
+      const iv = k < intList.length ? intList[k] : 50;
+      if (ttv <= 0 && dv > 0) {
+        const sTh = wavelength / (2 * dv);
+        if (sTh > 0 && sTh < 0.998) ttv = (2 * Math.asin(sTh) * 180) / Math.PI;
+      } else if (dv <= 0 && ttv > 0) {
+        dv = wavelength / (2 * Math.sin((ttv / 2) * (Math.PI / 180)));
+      }
+      if (ttv > 0) {
+        peaks.push({
+          two_theta: Number(ttv.toFixed(3)),
+          d: Number(dv.toFixed(4)),
+          intensity: Number(iv.toFixed(1)),
+          hkl: hklList[k] || [0, 0, 0]
+        });
+      }
+    }
+    if (!peaks.length && cell && cell.a > 0) {
+      peaks = computeDSpacingsClient(sysNorm, cell, wavelength, 10, 85, 4).slice(0, 16);
+    }
+    peaks.sort((x, y) => x.two_theta - y.two_theta);
+
+    const cardEls = chemByCard.get(rawPid) || (iEl >= 0 && row[iEl] ? extractFormulaElementsClient(String(row[iEl])) : []);
+    const cardSubs = subByCard.get(rawPid) || (iSub >= 0 && row[iSub] ? String(row[iSub]).split(/[,;\s]+/).map((x) => x.trim().toUpperCase()).filter(Boolean) : []);
+    const defaultGamma = (sysNorm === 'Hexagonal' || sysNorm === 'Trigonal') ? 120 : 90;
+
+    const phaseObj = {
+      id: pid,
+      jcpds: pid,
+      cod_id: rawPid,
+      name: dispName,
+      formula: formula || dispName,
+      system: sysNorm,
+      space_group: sgStr || 'P1',
+      cell: cell || { a: 4.5, b: 4.5, c: 4.5, alpha: 90, beta: 90, gamma: defaultGamma },
+      volume: iVol >= 0 && row[iVol] ? Number(row[iVol]) : (cell ? computeCellVolumeClient(cell, sysNorm) : 0),
+      density: iDens >= 0 && row[iDens] ? Number(row[iDens]) : null,
+      peaks,
+      elements: cardEls,
+      subfiles: cardSubs,
+      source: `Local SQ (${store.fileName})`,
+      sq_file: store.fileName
+    };
+    if (iNrec >= 0 && Number(row[iNrec]) > 0) {
+      phaseObj._nrec = parseInt(row[iNrec], 10);
+    }
+    phases.push(enrichPhaseClient(phaseObj));
+  }
+
+  return datFile ? enrichPhasesFromPdf2DatClient(phases, datFile, wavelength) : phases;
+}
+
+async function openClientSqStore(file, datFile = null, previewLimit = 150) {
   const buf = await file.arrayBuffer();
   const bytes = new Uint8Array(buf);
   const magic = new TextDecoder('ascii').decode(bytes.slice(0, 15));
@@ -4788,117 +5863,565 @@ async function parseSqFileClient(file) {
     const txt = new TextDecoder('utf-8').decode(bytes);
     const data = JSON.parse(txt);
     const arr = Array.isArray(data) ? data : (data.phases || [data]);
-    return arr.map((p) => enrichPhaseClient({ ...p, source: `Local SQ (${file.name})`, sq_file: file.name }));
+    const phases = arr.map((p) => enrichPhaseClient({ ...p, source: `Local SQ (${file.name})`, sq_file: file.name }));
+    return {
+      fileName: file.name,
+      isJson: true,
+      db: null,
+      totalCards: phases.length,
+      jsonPhases: phases,
+      previewPhases: phases.slice(0, previewLimit)
+    };
   }
 
   const SQL = await loadSqlJsOnDemand();
   const db = new SQL.Database(bytes);
   try {
     const tblRes = db.exec("SELECT name FROM sqlite_master WHERE type='table'");
-    const tblNames = tblRes.length ? tblRes[0].values.map((v) => String(v[0])) : [];
-    const mainTbl = ['id', 'phases', 'cards', 'entries', 'structures', 'pattern'].find((t) =>
-      tblNames.some((n) => n.toLowerCase() === t)
-    ) || tblNames[0];
-    if (!mainTbl) return [];
+    const tblNames = tblRes.length
+      ? tblRes[0].values.map((v) => String(v[0])).filter((n) => !n.startsWith('sqlite_'))
+      : [];
+    if (!tblNames.length) {
+      db.close();
+      return { fileName: file.name, isJson: false, db: null, totalCards: 0, previewPhases: [] };
+    }
 
-    const mainExec = db.exec(`SELECT * FROM "${mainTbl}" LIMIT 1500`);
-    if (!mainExec.length) return [];
-    const cols = mainExec[0].columns;
-    const colsLow = {};
-    cols.forEach((c, idx) => { colsLow[c.toLowerCase()] = idx; });
-    const pick = (...cands) => {
+    const tablesCols = {};
+    for (const t of tblNames) {
+      const pRes = db.exec(`PRAGMA table_info("${t}")`);
+      tablesCols[t] = pRes.length ? pRes[0].values.map((v) => String(v[1])) : [];
+    }
+
+    const preferred = ['id', 'phases', 'cards', 'entries', 'pdf', 'structures', 'main', 'info', 'pattern'];
+    const auxSet = new Set(['chemical', 'subfiles', 'infodb', 'warningcif', 'warn', 'peaks', 'lines', 'reflections', 'top']);
+    let mainTbl = null;
+    for (const pref of preferred) {
+      const hit = tblNames.find((n) => n.toLowerCase() === pref && tablesCols[n].length > 0);
+      if (hit) { mainTbl = hit; break; }
+    }
+    if (!mainTbl) {
+      mainTbl = tblNames.find((n) => !auxSet.has(n.toLowerCase())) || tblNames[0];
+    }
+
+    const chemTbl = tblNames.find((n) => n.toLowerCase() === 'chemical') || null;
+    const subTbl = tblNames.find((n) => n.toLowerCase() === 'subfiles') || null;
+    const infodbTbl = tblNames.find((n) => n.toLowerCase() === 'infodb') || null;
+
+    let isPdfSq = file.name.toLowerCase().startsWith('pdf');
+    if (infodbTbl && !isPdfSq) {
+      try {
+        const infoRes = db.exec(`SELECT * FROM "${infodbTbl}" LIMIT 1`);
+        if (infoRes.length && infoRes[0].values.length) {
+          const joined = infoRes[0].values[0].map((x) => String(x || '')).join(' ').toLowerCase();
+          if (joined.includes('pdf')) isPdfSq = true;
+        }
+      } catch (_) {}
+    }
+
+    const colMap = {};
+    (tablesCols[mainTbl] || []).forEach((c) => { colMap[c.toLowerCase()] = c; });
+    const pickCol = (...cands) => {
       for (const c of cands) {
-        if (colsLow[c] !== undefined) return colsLow[c];
+        if (colMap[c] !== undefined) return colMap[c];
       }
-      return -1;
+      return null;
     };
 
-    const isPdfSq = file.name.toLowerCase().startsWith('pdf');
-    const iId = pick('id', 'card_id', 'pdf_id', 'jcpds', 'cod_id', 'entry_id', 'num');
-    const iForm = pick('formula', 'chem_formula', 'chemical_formula', 'sumformula');
-    const iName = pick('name', 'chemical_name', 'chemname', 'compound_name', 'title');
-    const iMin = pick('mineralname', 'mineral_name', 'mineral');
-    const iSys = pick('sy', 'syngony', 'system', 'crystal_system', 'symmetry');
-    const iSg = pick('sg', 'spgr', 'space_group', 'spacegroup', 'sgroup');
-    const iDval = pick('dval', 'dvalue', 'd_spacings', 'dsp', 'd_list', 'd');
-    const iInt = pick('intens', 'intensita', 'intensity', 'intensities', 'i_list', 'int');
-    const i2T = pick('two_theta', 'theta2', 'tth');
-    const iA = pick('a', 'cell_a'), iB = pick('b', 'cell_b'), iC = pick('c', 'cell_c');
-    const iAl = pick('alpha', 'al'), iBe = pick('beta', 'be'), iGa = pick('gamma', 'ga');
-    const iVol = pick('vol', 'volume', 'cell_volume');
-    const iDens = pick('dens', 'density', 'dcalc', 'dx');
-
-    const wavelength = 1.5406;
-    const out = [];
-    for (const row of mainExec[0].values) {
-      const rawPid = iId >= 0 && row[iId] !== null ? String(row[iId]) : String(out.length + 1);
-      const pid = formatPdf2JcpdsClient(rawPid, isPdfSq);
-      const formula = iForm >= 0 && row[iForm] ? String(row[iForm]).trim() : '';
-      const rawName = iName >= 0 && row[iName] ? String(row[iName]).trim() : '';
-      const minName = iMin >= 0 && row[iMin] ? String(row[iMin]).trim() : '';
-      const baseName = minName && rawName && !rawName.toLowerCase().includes(minName.toLowerCase())
-        ? `${minName} — ${rawName}`
-        : (minName || rawName);
-      const dispName = baseName && formula && !baseName.includes(formula) ? `${baseName} (${formula})` : (baseName || formula || `Card ${pid}`);
-      const hasExplicitCell = iA >= 0 && Number(row[iA]) > 0;
-      const a = hasExplicitCell ? Number(row[iA]) : 0;
-      const b = (iB >= 0 && Number(row[iB])) || a;
-      const c = (iC >= 0 && Number(row[iC])) || a;
-      const alpha = (iAl >= 0 && Number(row[iAl])) || 90;
-      const beta = (iBe >= 0 && Number(row[iBe])) || 90;
-      const gamma = (iGa >= 0 && Number(row[iGa])) || 90;
-      const cell = hasExplicitCell ? { a, b, c, alpha, beta, gamma } : null;
-      const sysRaw = iSys >= 0 && row[iSys] ? String(row[iSys]) : 'Orthorhombic';
-
-      const dList = iDval >= 0 ? decodeSqNumsClient(row[iDval]) : [];
-      const intList = iInt >= 0 ? decodeSqNumsClient(row[iInt]) : [];
-      const ttList = i2T >= 0 ? decodeSqNumsClient(row[i2T]) : [];
-      const nPk = Math.max(dList.length, ttList.length);
-      let peaks = [];
-      for (let k = 0; k < nPk; k++) {
-        let dv = k < dList.length ? dList[k] : 0;
-        let ttv = k < ttList.length ? ttList[k] : 0;
-        const iv = k < intList.length ? intList[k] : 50;
-        if (ttv <= 0 && dv > 0) {
-          const sTh = wavelength / (2 * dv);
-          if (sTh > 0 && sTh < 0.998) ttv = (2 * Math.asin(sTh) * 180) / Math.PI;
-        } else if (dv <= 0 && ttv > 0) {
-          dv = wavelength / (2 * Math.sin((ttv / 2) * (Math.PI / 180)));
-        }
-        if (ttv > 0) {
-          peaks.push({
-            two_theta: Number(ttv.toFixed(3)),
-            d: Number(dv.toFixed(4)),
-            intensity: Number(iv.toFixed(1)),
-            hkl: [0, 0, 0]
-          });
-        }
-      }
-      if (!peaks.length && cell && cell.a > 0) {
-        peaks = computeDSpacingsClient(sysRaw, cell, wavelength, 10, 85, 4).slice(0, 16);
-      }
-      peaks.sort((x, y) => x.two_theta - y.two_theta);
-
-      out.push(enrichPhaseClient({
-        id: pid,
-        jcpds: pid,
-        cod_id: rawPid,
-        name: dispName,
-        formula: formula || dispName,
-        system: sysRaw,
-        space_group: iSg >= 0 && row[iSg] ? String(row[iSg]) : 'P1',
-        cell: cell || { a: 4.5, b: 4.5, c: 4.5, alpha: 90, beta: 90, gamma: 90 },
-        volume: iVol >= 0 && row[iVol] ? Number(row[iVol]) : (cell ? computeCellVolumeClient(cell, sysRaw) : 0),
-        density: iDens >= 0 && row[iDens] ? Number(row[iDens]) : null,
-        peaks,
-        source: `Local SQ (${file.name})`,
-        sq_file: file.name
-      }));
+    let chemIdCol = null, chemElCol = null;
+    if (chemTbl) {
+      const cm = {};
+      (tablesCols[chemTbl] || []).forEach((c) => { cm[c.toLowerCase()] = c; });
+      chemIdCol = cm.id || cm.card_id || cm.phase_id || null;
+      chemElCol = cm.chemical_element || cm.element || cm.el || cm.symbol || null;
     }
-    return out;
-  } finally {
-    db.close();
+
+    let subIdCol = null, subSfCol = null;
+    if (subTbl) {
+      const sm = {};
+      (tablesCols[subTbl] || []).forEach((c) => { sm[c.toLowerCase()] = c; });
+      subIdCol = sm.id || sm.card_id || null;
+      subSfCol = sm.subfile || sm.sub || sm.code || null;
+    }
+
+    const cntRes = db.exec(`SELECT COUNT(*) FROM "${mainTbl}"`);
+    const totalCards = cntRes.length && cntRes[0].values.length ? Number(cntRes[0].values[0][0]) : 0;
+
+    const store = {
+      fileName: file.name,
+      isJson: false,
+      db,
+      isPdfSq,
+      totalCards,
+      mainTbl,
+      mainCols: tablesCols[mainTbl] || [],
+      chemTbl,
+      chemIdCol,
+      chemElCol,
+      subTbl,
+      subIdCol,
+      subSfCol,
+      idCol: pickCol('id', 'card_id', 'pdf_id', 'jcpds', 'entry_id', 'code', 'num', 'cod_id'),
+      nameCol: pickCol('name', 'chem_name', 'chemical_name', 'chemname', 'compound_name', 'compound', 'cname', 'title'),
+      minCol: pickCol('mineralname', 'mineral_name', 'mineral'),
+      formCol: pickCol('formula', 'chemical_formula', 'chem_formula', 'sumformula', 'chemical', 'formula_sum', 'comp'),
+      sysCol: pickCol('system', 'syngony', 'crystal_system', 'csys', 'sym', 'symmetry', 'sy'),
+      sgCol: pickCol('space_group', 'spacegroup', 'spgr', 'sg', 'sgroup', 'spg'),
+      aCol: pickCol('a', 'cell_a'),
+      bCol: pickCol('b', 'cell_b'),
+      cCol: pickCol('c', 'cell_c'),
+      alCol: pickCol('alpha', 'al'),
+      beCol: pickCol('beta', 'be'),
+      gaCol: pickCol('gamma', 'ga'),
+      volCol: pickCol('volume', 'vol', 'cell_volume', 'v'),
+      densCol: pickCol('density', 'dcalc', 'rho', 'dens', 'dmeas', 'dx'),
+      subCol: pickCol('subfile', 'subfiles', 'sub', 'category'),
+      elCol: pickCol('elements', 'els'),
+      dCol: pickCol('dval', 'dvalue', 'd', 'd_values', 'd_spacings', 'dsp', 'd_list', 'dlist'),
+      bestdCol: pickCol('bestdval', 'top_d'),
+      intCol: pickCol('intens', 'intensita', 'intensity', 'intensities', 'int', 'ival', 'i_list', 'ilist', 'rel_int'),
+      ttCol: pickCol('two_theta', 'theta2', 'tth', 'tt', 'twotheta'),
+      hklCol: pickCol('hkl', 'miller', 'hkls', 'indices'),
+      nrecCol: pickCol('nrec'),
+      ids: null,
+      idToIdx: null,
+      dMat: null,
+      previewPhases: []
+    };
+
+    // Build compact float32 Hanawalt d-spacing matrix (totalCards x 8) across ALL cards for instant Search-Match
+    const srcDCol = store.bestdCol || store.dCol;
+    if (totalCards > 0 && store.idCol && srcDCol) {
+      const ids = new Array(totalCards);
+      const idToIdx = new Map();
+      const dMat = new Float32Array(totalCards * 8);
+      const needIntSort = !store.bestdCol && Boolean(store.intCol);
+      const idxSql = needIntSort
+        ? `SELECT "${store.idCol}", "${srcDCol}", "${store.intCol}" FROM "${mainTbl}"`
+        : `SELECT "${store.idCol}", "${srcDCol}" FROM "${mainTbl}"`;
+      const stmt = db.prepare(idxSql);
+      try {
+        let rIdx = 0;
+        if (!needIntSort) {
+          while (stmt.step() && rIdx < totalCards) {
+            const row = stmt.get();
+            const cid = row[0];
+            ids[rIdx] = cid;
+            idToIdx.set(cid, rIdx);
+            idToIdx.set(String(cid), rIdx);
+            const rawBd = row[1];
+            if (rawBd !== null && rawBd !== undefined) {
+              const sBd = rawBd instanceof Uint8Array
+                ? new TextDecoder('utf-8', { fatal: false }).decode(rawBd)
+                : String(rawBd);
+              const parts = sBd.split(/[,\s]+/);
+              let slot = 0;
+              for (let k = 0; k < parts.length && slot < 8; k++) {
+                if (!parts[k]) continue;
+                const v = parseFloat(parts[k]);
+                if (Number.isFinite(v) && v > 0.05) {
+                  dMat[rIdx * 8 + slot] = v;
+                  slot++;
+                }
+              }
+            }
+            rIdx++;
+          }
+        } else {
+          while (stmt.step() && rIdx < totalCards) {
+            const row = stmt.get();
+            const cid = row[0];
+            ids[rIdx] = cid;
+            idToIdx.set(cid, rIdx);
+            idToIdx.set(String(cid), rIdx);
+            const dVals = decodeSqNumsClient(row[1]);
+            const iVals = decodeSqNumsClient(row[2]);
+            if (dVals.length > 0) {
+              if (iVals.length >= dVals.length) {
+                const pairs = dVals.map((dv, k) => [iVals[k], dv]).sort((a, b) => b[0] - a[0]);
+                for (let slot = 0; slot < Math.min(8, pairs.length); slot++) {
+                  if (pairs[slot][1] > 0.05) dMat[rIdx * 8 + slot] = pairs[slot][1];
+                }
+              } else {
+                for (let slot = 0; slot < Math.min(8, dVals.length); slot++) {
+                  if (dVals[slot] > 0.05) dMat[rIdx * 8 + slot] = dVals[slot];
+                }
+              }
+            }
+            rIdx++;
+          }
+        }
+      } finally {
+        stmt.free();
+      }
+      store.ids = ids;
+      store.idToIdx = idToIdx;
+      store.dMat = dMat;
+    }
+
+    const prevExec = db.exec(`SELECT * FROM "${mainTbl}" LIMIT ${Math.max(1, previewLimit)}`);
+    if (prevExec.length && prevExec[0].values.length) {
+      store.previewPhases = await materializeSqRowsClient(store, prevExec[0].values, prevExec[0].columns, datFile);
+    }
+    return store;
+  } catch (err) {
+    try { db.close(); } catch (_) {}
+    throw err;
   }
+}
+
+function buildClientSqWhereClause(store, query = '', restraints = null) {
+  const clauses = [];
+  const params = [];
+  const idQ = store.idCol ? `"${store.idCol}"` : null;
+
+  // 1. Composition restraints via `chemical` table
+  const comp = (restraints && restraints.composition) || {};
+  if (store.chemTbl && store.chemIdCol && store.chemElCol && idQ) {
+    const cTbl = `"${store.chemTbl}"`, cId = `"${store.chemIdCol}"`, cEl = `"${store.chemElCol}"`;
+    for (const reqEl of comp.and_elements || []) {
+      clauses.push(`${idQ} IN (SELECT ${cId} FROM ${cTbl} WHERE ${cEl} = ?)`);
+      params.push(reqEl);
+    }
+    for (const excEl of comp.not_elements || []) {
+      clauses.push(`${idQ} NOT IN (SELECT ${cId} FROM ${cTbl} WHERE ${cEl} = ?)`);
+      params.push(excEl);
+    }
+    const orEls = comp.or_elements || [];
+    if (orEls.length) {
+      clauses.push(`${idQ} IN (SELECT ${cId} FROM ${cTbl} WHERE ${cEl} IN (${orEls.map(() => '?').join(',')}))`);
+      params.push(...orEls);
+    }
+    const onlyEls = comp.only_elements || [];
+    if (onlyEls.length) {
+      clauses.push(`${idQ} NOT IN (SELECT ${cId} FROM ${cTbl} WHERE ${cEl} NOT IN (${onlyEls.map(() => '?').join(',')}))`);
+      params.push(...onlyEls);
+    }
+    const justEls = comp.just_elements || [];
+    if (justEls.length) {
+      for (const jel of justEls) {
+        clauses.push(`${idQ} IN (SELECT ${cId} FROM ${cTbl} WHERE ${cEl} = ?)`);
+        params.push(jel);
+      }
+      clauses.push(`${idQ} NOT IN (SELECT ${cId} FROM ${cTbl} WHERE ${cEl} NOT IN (${justEls.map(() => '?').join(',')}))`);
+      params.push(...justEls);
+    }
+  }
+
+  // 2. Subfiles restraint via `subfiles` table
+  const subCfg = (restraints && restraints.subfiles) || {};
+  const selSubs = (subCfg.selected || []).map((s) => String(s).trim().toUpperCase()).filter(Boolean);
+  const subMode = String(subCfg.mode || 'or').toLowerCase();
+  if (selSubs.length && store.subTbl && store.subIdCol && store.subSfCol && idQ) {
+    const sTbl = `"${store.subTbl}"`, sId = `"${store.subIdCol}"`, sSf = `"${store.subSfCol}"`;
+    if (subMode === 'and') {
+      for (const sc of selSubs) {
+        clauses.push(`${idQ} IN (SELECT ${sId} FROM ${sTbl} WHERE ${sSf} = ?)`);
+        params.push(sc);
+      }
+    } else if (subMode === 'not') {
+      clauses.push(`${idQ} NOT IN (SELECT ${sId} FROM ${sTbl} WHERE ${sSf} IN (${selSubs.map(() => '?').join(',')}))`);
+      params.push(...selSubs);
+    } else {
+      clauses.push(`${idQ} IN (SELECT ${sId} FROM ${sTbl} WHERE ${sSf} IN (${selSubs.map(() => '?').join(',')}))`);
+      params.push(...selSubs);
+    }
+  }
+
+  // 3. Chemical name restraint
+  const cnameCfg = (restraints && restraints.chemical_name) || {};
+  const cnameQ = String(cnameCfg.query || '').trim();
+  if (cnameQ) {
+    const cnameMode = String(cnameCfg.mode || 'contains').toLowerCase();
+    const textCols = [store.nameCol, store.minCol, store.formCol].filter(Boolean);
+    if (textCols.length && cnameMode !== 'exclude') {
+      const likePat = cnameMode === 'starts_with' ? `${cnameQ}%` : `%${cnameQ}%`;
+      const subOr = [];
+      for (const tc of textCols) {
+        subOr.push(`TRIM("${tc}") LIKE ?`);
+        params.push(likePat);
+      }
+      if (store.formCol) {
+        subOr.push(`REPLACE("${store.formCol}", ' ', '') LIKE ?`);
+        params.push(`%${cnameQ.replace(/\s+/g, '')}%`);
+      }
+      clauses.push(`(${subOr.join(' OR ')})`);
+    }
+  }
+
+  // 4. Entries / JCPDS ID restraint
+  const entCfg = (restraints && restraints.entries) || {};
+  const idsText = String(entCfg.ids_text || '').trim();
+  if (idsText && idQ) {
+    const tokens = idsText.split(/[,;\s]+/).map((t) => t.trim()).filter(Boolean);
+    const idOrs = [];
+    for (const tok of tokens) {
+      if (tok.includes('*')) {
+        const mSet = tok.match(/^0*(\d{1,3})-\*$/);
+        if (mSet && store.isPdfSq) {
+          const sNum = parseInt(mSet[1], 10);
+          idOrs.push(`(${idQ} BETWEEN ? AND ?)`);
+          params.push(sNum * 10000, sNum * 10000 + 9999);
+        }
+        idOrs.push(`CAST(${idQ} AS TEXT) LIKE ?`);
+        params.push(tok.replace(/\*/g, '%'));
+      } else {
+        const sqInt = parseJcpdsToSqIntClient(tok);
+        if (sqInt !== null) {
+          idOrs.push(`${idQ} = ?`);
+          params.push(sqInt);
+        }
+        idOrs.push(`CAST(${idQ} AS TEXT) LIKE ?`);
+        params.push(`%${tok}%`);
+      }
+    }
+    if (idOrs.length) clauses.push(`(${idOrs.join(' OR ')})`);
+  }
+
+  // 5. Free-text / JCPDS / Formula search query (including element-order-independent formula matching!)
+  const qClean = String(query || '').trim();
+  if (qClean) {
+    const qOrs = [];
+    const sqIntQ = parseJcpdsToSqIntClient(qClean);
+    if (idQ) {
+      if (sqIntQ !== null) {
+        qOrs.push(`${idQ} = ?`);
+        params.push(sqIntQ);
+      }
+      qOrs.push(`CAST(${idQ} AS TEXT) LIKE ?`);
+      params.push(`%${qClean}%`);
+    }
+    for (const tc of [store.nameCol, store.minCol, store.formCol].filter(Boolean)) {
+      qOrs.push(`"${tc}" LIKE ?`);
+      params.push(`%${qClean}%`);
+    }
+    if (store.formCol) {
+      qOrs.push(`REPLACE("${store.formCol}", ' ', '') LIKE ?`);
+      params.push(`%${qClean.replace(/\s+/g, '')}%`);
+    }
+    // If qClean is a pure chemical formula (e.g. Cs3Bi2I9 vs Hill Bi2Cs3I9), also match exact element set via `chemical`
+    const qStoich = parseFormulaStoichiometryClient(qClean);
+    if (qStoich && store.chemTbl && store.chemIdCol && store.chemElCol && idQ) {
+      const fEls = Object.keys(qStoich);
+      if (fEls.length >= 1) {
+        const cTbl = `"${store.chemTbl}"`, cId = `"${store.chemIdCol}"`, cEl = `"${store.chemElCol}"`;
+        const elAnds = fEls.map(() => `${idQ} IN (SELECT ${cId} FROM ${cTbl} WHERE ${cEl} = ?)`).join(' AND ');
+        params.push(...fEls);
+        const notExtra = `${idQ} NOT IN (SELECT ${cId} FROM ${cTbl} WHERE ${cEl} NOT IN (${fEls.map(() => '?').join(',')}))`;
+        params.push(...fEls);
+        qOrs.push(`(${elAnds} AND ${notExtra})`);
+      }
+    }
+    if (qOrs.length) clauses.push(`(${qOrs.join(' OR ')})`);
+  }
+
+  return { whereSql: clauses.join(' AND '), params };
+}
+
+async function queryClientSqStores(query = '', restraints = null, limit = 250) {
+  if (!clientSqStores.length) return [];
+  const collected = [];
+  for (const store of clientSqStores) {
+    if (store.isJson) {
+      const flt = filterPhasesByRestraintsClient(store.jsonPhases || [], restraints, query);
+      collected.push(...flt.slice(0, limit));
+      continue;
+    }
+    if (!store.db) continue;
+    const { whereSql, params } = buildClientSqWhereClause(store, query, restraints);
+    const sqlLimit = Math.max(limit * 3, 450);
+    const sql = whereSql
+      ? `SELECT * FROM "${store.mainTbl}" WHERE ${whereSql} LIMIT ${sqlLimit}`
+      : `SELECT * FROM "${store.mainTbl}" LIMIT ${Math.min(limit, 250)}`;
+    const stmt = store.db.prepare(sql);
+    const rows = [];
+    let cols = store.mainCols;
+    try {
+      if (params.length) stmt.bind(params);
+      cols = stmt.getColumnNames();
+      while (stmt.step()) {
+        rows.push(stmt.get());
+      }
+    } finally {
+      stmt.free();
+    }
+    if (rows.length) {
+      const materialized = await materializeSqRowsClient(store, rows, cols, clientPdf2DatFile);
+      const filtered = filterPhasesByRestraintsClient(materialized, restraints, query);
+      collected.push(...filtered);
+      if (collected.length >= limit) break;
+    }
+  }
+  return collected.slice(0, limit);
+}
+
+async function searchClientSqStoresByPeaks(
+  expPeaks,
+  toleranceDeg = 0.45,
+  restraints = null,
+  query = '',
+  sampleHint = ''
+) {
+  if (!clientSqStores.length || !expPeaks || !expPeaks.length) return [];
+  const wavelength = 1.5406;
+  const sortedExp = [...expPeaks]
+    .filter((p) => Number(p.two_theta) > 0)
+    .sort((a, b) => Number(b.intensity || 0) - Number(a.intensity || 0))
+    .slice(0, 16);
+  if (!sortedExp.length) return [];
+
+  const tol = Math.max(Number(toleranceDeg || 0.45), 0.42);
+  const nWin = sortedExp.length;
+  const dLoArr = new Float32Array(nWin);
+  const dHiArr = new Float32Array(nWin);
+  const epWArr = new Float32Array(nWin);
+  for (let w = 0; w < nWin; w++) {
+    const tt = Number(sortedExp[w].two_theta);
+    const thLo = Math.max(0.25, (tt - tol) / 2.0) * (Math.PI / 180.0);
+    const thHi = Math.min(88.0, (tt + tol) / 2.0) * (Math.PI / 180.0);
+    dHiArr[w] = wavelength / (2.0 * Math.sin(thLo));
+    dLoArr[w] = wavelength / (2.0 * Math.sin(thHi));
+    epWArr[w] = Math.pow(Math.max(Number(sortedExp[w].intensity || 15), 5) / 100.0, 0.65);
+  }
+
+  const outCandidates = [];
+  for (const store of clientSqStores) {
+    if (store.isJson) {
+      outCandidates.push(...(store.jsonPhases || []));
+      continue;
+    }
+    if (!store.db || !store.dMat || !store.ids || !store.totalCards) continue;
+
+    // Build optional SQLite row bitmask if restraints or explicit query are active
+    let allowedMask = null;
+    const { whereSql, params } = buildClientSqWhereClause(store, query, restraints);
+    if (whereSql && store.idCol) {
+      allowedMask = new Uint8Array(store.totalCards);
+      const mStmt = store.db.prepare(`SELECT "${store.idCol}" FROM "${store.mainTbl}" WHERE ${whereSql}`);
+      try {
+        if (params.length) mStmt.bind(params);
+        while (mStmt.step()) {
+          const cid = mStmt.get()[0];
+          const rIdx = store.idToIdx.get(cid) ?? store.idToIdx.get(String(cid));
+          if (rIdx !== undefined) allowedMask[rIdx] = 1;
+        }
+      } finally {
+        mStmt.free();
+      }
+    }
+
+    // Vectorized scan over all N x 8 float32 Hanawalt d-spacings
+    const N = store.totalCards;
+    const dMat = store.dMat;
+    const topK = 150;
+    const bestIdx = [];
+    const bestScore = [];
+    let minKeepScore = 0;
+
+    for (let i = 0; i < N; i++) {
+      if (allowedMask && !allowedMask[i]) continue;
+      const base = i * 8;
+      if (dMat[base] <= 0.05) continue;
+
+      let score = 0;
+      let hitCount = 0;
+      for (let s = 0; s < 8; s++) {
+        const dv = dMat[base + s];
+        if (dv <= 0.05) continue;
+        const slotW = 1.0 - 0.065 * s;
+        let bestWinW = 0;
+        for (let w = 0; w < nWin; w++) {
+          if (dv >= dLoArr[w] && dv <= dHiArr[w]) {
+            const midD = 0.5 * (dLoArr[w] + dHiArr[w]);
+            const halfSpan = Math.max(1e-4, 0.5 * (dHiArr[w] - dLoArr[w]));
+            const prox = 1.0 - 0.35 * (Math.abs(dv - midD) / halfSpan);
+            const candW = epWArr[w] * slotW * prox;
+            if (candW > bestWinW) bestWinW = candW;
+          }
+        }
+        if (bestWinW > 0) {
+          score += bestWinW;
+          hitCount++;
+        }
+      }
+
+      if (hitCount === 0) continue;
+      if (hitCount >= 3) score *= 1.25;
+      else if (hitCount === 1 && nWin >= 4) score *= 0.45;
+
+      if (bestIdx.length < topK) {
+        bestIdx.push(i);
+        bestScore.push(score);
+        if (bestIdx.length === topK) {
+          minKeepScore = Math.min(...bestScore);
+        }
+      } else if (score > minKeepScore) {
+        let worstPos = 0;
+        let worstVal = bestScore[0];
+        for (let k = 1; k < topK; k++) {
+          if (bestScore[k] < worstVal) {
+            worstVal = bestScore[k];
+            worstPos = k;
+          }
+        }
+        bestIdx[worstPos] = i;
+        bestScore[worstPos] = score;
+        minKeepScore = bestScore[0];
+        for (let k = 1; k < topK; k++) {
+          if (bestScore[k] < minKeepScore) minKeepScore = bestScore[k];
+        }
+      }
+    }
+
+    const candIdsSet = new Set(bestIdx.map((idx) => store.ids[idx]));
+
+    // Also inject exact-element-set candidates when sampleHint encodes a clean formula (e.g. Cs3Bi2I9.xy)
+    const hintForm = !(query && query.trim()) ? extractCleanFormulaHintClient(sampleHint) : '';
+    const hintStoich = hintForm ? parseFormulaStoichiometryClient(hintForm) : null;
+    if (hintStoich && store.chemTbl && store.chemIdCol && store.chemElCol && store.idCol) {
+      const hEls = Object.keys(hintStoich);
+      if (hEls.length >= 1) {
+        const cTbl = `"${store.chemTbl}"`, cId = `"${store.chemIdCol}"`, cEl = `"${store.chemElCol}"`, idQ = `"${store.idCol}"`;
+        const elAnds = hEls.map(() => `${idQ} IN (SELECT ${cId} FROM ${cTbl} WHERE ${cEl} = ?)`).join(' AND ');
+        const notExtra = `${idQ} NOT IN (SELECT ${cId} FROM ${cTbl} WHERE ${cEl} NOT IN (${hEls.map(() => '?').join(',')}))`;
+        const hStmt = store.db.prepare(`SELECT ${idQ} FROM "${store.mainTbl}" WHERE ${elAnds} AND ${notExtra} LIMIT 30`);
+        try {
+          hStmt.bind([...hEls, ...hEls]);
+          while (hStmt.step()) {
+            const cid = hStmt.get()[0];
+            const rIdx = store.idToIdx.get(cid) ?? store.idToIdx.get(String(cid));
+            if (!allowedMask || (rIdx !== undefined && allowedMask[rIdx])) {
+              candIdsSet.add(cid);
+            }
+          }
+        } finally {
+          hStmt.free();
+        }
+      }
+    }
+
+    const candIds = Array.from(candIdsSet);
+    if (!candIds.length || !store.idCol) continue;
+
+    const marks = candIds.map(() => '?').join(',');
+    const fStmt = store.db.prepare(`SELECT * FROM "${store.mainTbl}" WHERE "${store.idCol}" IN (${marks})`);
+    const fetchedRows = [];
+    let cols = store.mainCols;
+    try {
+      fStmt.bind(candIds);
+      cols = fStmt.getColumnNames();
+      while (fStmt.step()) {
+        fetchedRows.push(fStmt.get());
+      }
+    } finally {
+      fStmt.free();
+    }
+
+    if (fetchedRows.length) {
+      const materialized = await materializeSqRowsClient(store, fetchedRows, cols, clientPdf2DatFile);
+      outCandidates.push(...materialized);
+    }
+  }
+  return outCandidates;
 }
 
 /* ============================================================================
@@ -5232,7 +6755,13 @@ function bindDbIndexAndRestraintsEvents() {
   document.getElementById('sqPathInput').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') applySqPath();
   });
-  document.getElementById('sqScanDesktopBtn').addEventListener('click', () => browseServerSqDirectory(''));
+  document.getElementById('sqScanDesktopBtn').addEventListener('click', () => {
+    if (!state.backendAvailable) {
+      document.getElementById('sqFolderPicker').click();
+      return;
+    }
+    browseServerSqDirectory('');
+  });
   document.getElementById('sqClearIndexBtn').addEventListener('click', clearSqIndex);
 
   document.getElementById('sqBrowseFileBtn').addEventListener('click', async (e) => {
