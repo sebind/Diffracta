@@ -844,8 +844,8 @@ def test_python_310_311_fstring_syntax_compatibility():
         tree = ast.parse(src, filename=py_path)
         for node in ast.walk(tree):
             if isinstance(node, ast.FormattedValue):
-                seg = ast.get_source_segment(src, node) or ""
-                assert "\\" not in seg, f"Python <3.12 incompatible backslash in f-string at {py_path}:{node.lineno}: {seg}"
+                seg = ast.get_source_segment(src, node.value) or ""
+                assert "\\" not in seg, f"Python <3.12 incompatible backslash in f-string expr at {py_path}:{node.lineno}: {seg}"
 
 
 
