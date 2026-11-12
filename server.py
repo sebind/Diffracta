@@ -62,6 +62,12 @@ class SearchMatchRequest(BaseModel):
 
 class SqIndexRequest(BaseModel):
     path: Optional[str] = None
+    expected_size: Optional[int] = None
+
+
+class PickPathRequest(BaseModel):
+    mode: str = "file"
+    initial_dir: Optional[str] = None
 
 
 class DatabaseFilterRequest(BaseModel):
@@ -195,12 +201,70 @@ def api_sq_browse(dir: Optional[str] = Query(None, description="Local directory 
 @app.post("/api/database/sq-index")
 def api_set_sq_index(req: SqIndexRequest):
     try:
-        status = xrd_engine.set_sq_database_path(req.path)
+        status = xrd_engine.set_sq_database_path(req.path, expected_size=req.expected_size)
         return status
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to index .sq database: {e}")
+
+
+@app.post("/api/database/pick-path")
+def api_pick_local_path(req: PickPathRequest):
+    """Opens a native local OS file/folder dialog (when running locally on Windows) to return an exact path."""
+    if os.name != "nt" or os.environ.get("CI"):
+        return {"supported": False, "cancelled": False, "path": ""}
+
+    import subprocess
+    mode = (req.mode or "file").strip().lower()
+    init_dir = ""
+    if req.initial_dir:
+        cand = os.path.abspath(xrd_engine._clean_user_path_input(req.initial_dir))
+        if os.path.isfile(cand):
+            cand = os.path.dirname(cand)
+        if os.path.isdir(cand):
+            init_dir = cand
+
+    if mode == "folder":
+        ps_script = (
+            "Add-Type -AssemblyName System.Windows.Forms; "
+            "$top = New-Object System.Windows.Forms.Form; $top.TopMost = $true; $top.ShowInTaskbar = $false; "
+            "$dlg = New-Object System.Windows.Forms.FolderBrowserDialog; "
+            "$dlg.Description = 'Select Local XRD Database Folder (.sq, .cif, .json)'; "
+            "if ($env:DIFFRACTA_INIT_DIR -and (Test-Path $env:DIFFRACTA_INIT_DIR)) { $dlg.SelectedPath = $env:DIFFRACTA_INIT_DIR }; "
+            "if ($dlg.ShowDialog($top) -eq [System.Windows.Forms.DialogResult]::OK) { "
+            "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Output $dlg.SelectedPath }"
+        )
+    else:
+        ps_script = (
+            "Add-Type -AssemblyName System.Windows.Forms; "
+            "$top = New-Object System.Windows.Forms.Form; $top.TopMost = $true; $top.ShowInTaskbar = $false; "
+            "$dlg = New-Object System.Windows.Forms.OpenFileDialog; "
+            "$dlg.Title = 'Select Local XRD Database File (.sq, .sqlite, .db, .cif, .json)'; "
+            "$dlg.Filter = 'XRD Databases (*.sq;*.sqlite;*.sqlite3;*.db;*.cif;*.json)|*.sq;*.sqlite;*.sqlite3;*.db;*.cif;*.json|All Files (*.*)|*.*'; "
+            "if ($env:DIFFRACTA_INIT_DIR -and (Test-Path $env:DIFFRACTA_INIT_DIR)) { $dlg.InitialDirectory = $env:DIFFRACTA_INIT_DIR }; "
+            "if ($dlg.ShowDialog($top) -eq [System.Windows.Forms.DialogResult]::OK) { "
+            "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Output $dlg.FileName }"
+        )
+
+    env = dict(os.environ)
+    if init_dir:
+        env["DIFFRACTA_INIT_DIR"] = init_dir
+    try:
+        proc = subprocess.run(
+            ["powershell", "-NoProfile", "-STA", "-Command", ps_script],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=180,
+            env=env,
+        )
+        if proc.returncode != 0:
+            return {"supported": False, "cancelled": False, "path": ""}
+        chosen = (proc.stdout or "").strip()
+        return {"supported": True, "cancelled": not bool(chosen), "path": chosen}
+    except Exception:
+        return {"supported": False, "cancelled": False, "path": ""}
 
 
 @app.post("/api/database/sq-upload")
@@ -210,9 +274,12 @@ async def api_upload_sq_file(file: UploadFile = File(...)):
     if ext not in (".sq", ".sqlite", ".sqlite3", ".db"):
         raise HTTPException(status_code=400, detail="Only .sq / SQLite database files are supported")
     dest = os.path.join(xrd_engine.DATABASE_DIR, fname)
-    raw = await file.read()
     with open(dest, "wb") as f:
-        f.write(raw)
+        while True:
+            chunk = await file.read(4 * 1024 * 1024)
+            if not chunk:
+                break
+            f.write(chunk)
     try:
         status = xrd_engine.set_sq_database_path(dest)
         return status

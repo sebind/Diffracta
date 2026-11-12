@@ -655,5 +655,200 @@ def test_responsive_breakpoints_and_gitignore_safety():
     assert "database/*.sq" in gitignore
 
 
+def test_large_sq_vectorized_hanawalt_search_match_and_restraints(tmp_path):
+    """Verifies exact Hanawalt Search-Match on >1,500-card .sq DBs (low-angle peaks, restraints, 1-peak rejection)."""
+    import numpy as np
+
+    big_sq = str(tmp_path / "pdf2-large.sq")
+    conn = sqlite3.connect(big_sq)
+    try:
+        cur = conn.cursor()
+        cur.execute("CREATE TABLE infodb (version TEXT, type TEXT, ncard INTEGER)")
+        cur.execute("INSERT INTO infodb VALUES ('2.0', 'PDF-2', 1605)")
+        cur.execute(
+            """
+            CREATE TABLE id (
+                id INTEGER PRIMARY KEY,
+                name TEXT,
+                mineralname TEXT,
+                chemical_formula TEXT,
+                spacegroup TEXT,
+                dvalue TEXT,
+                intensita TEXT,
+                bestdval TEXT,
+                nrec INTEGER
+            )
+            """
+        )
+        cur.execute("CREATE TABLE chemical (id INTEGER, chemical_element TEXT)")
+        cur.execute("CREATE TABLE subfiles (id INTEGER, subfile TEXT)")
+
+        # Insert 1,600 decoy cards that share 1-decimal prefixes like 6.8x, 3.4x, 3.2x (the old SQL LIKE bug!)
+        decoy_rows = []
+        sub_rows = []
+        for idx in range(1, 1601):
+            cid = 900000 + idx  # Higher card IDs than 070-0666 so old `ORDER BY id DESC LIMIT` would favour decoys!
+            d1 = 6.8100 + (idx % 7) * 0.004
+            d2 = 3.4100 + (idx % 5) * 0.003
+            d3 = 3.2100 + (idx % 6) * 0.003
+            d_str = f"{d1:.4f},{d2:.4f},{d3:.4f},2.1500,1.8200"
+            decoy_rows.append((cid, f"Decoy {idx}", "", "Cd S", "P63mc", d_str, "100,80,70,40,30", f"{d1:.4f},{d2:.4f},{d3:.4f},", 0))
+            sub_rows.append((cid, "I"))
+        cur.executemany("INSERT INTO id VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", decoy_rows)
+        cur.executemany("INSERT INTO subfiles VALUES (?, ?)", sub_rows)
+
+        # Insert 1-peak coincidence decoy (matches only 2.099 A / 43.06 deg)
+        cur.execute(
+            "INSERT INTO id VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (950001, "Periclase", "Periclase", "Mg O", "Fm-3m", "2.0993,1.4845", "100,52", "2.0993,1.4845,", 0),
+        )
+        cur.execute("INSERT INTO subfiles VALUES (?, ?)", (950001, "I"))
+
+        # Insert genuine Cs3Bi2I9 card at mid-range ID 700666 (070-0666)
+        cs_d = [6.8889, 4.1980, 3.5010, 3.4444, 3.2382, 3.0031, 2.7648, 2.1023, 1.9995, 1.7601]
+        cs_i = [42, 28, 65, 52, 48, 40, 100, 55, 30, 26]
+        best_cs = "2.7648,3.5010,2.1023,3.4444,3.2382,6.8889,"
+        cur.execute(
+            "INSERT INTO id VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                700666,
+                "Cesium Bismuth Iodide",
+                "",
+                " Cs3 Bi2 I9 ",
+                "P63/mmc",
+                ",".join(f"{x:.4f}" for x in cs_d),
+                ",".join(str(x) for x in cs_i),
+                best_cs,
+                0,
+            ),
+        )
+        for el in ("Cs", "Bi", "I"):
+            cur.execute("INSERT INTO chemical VALUES (?, ?)", (700666, el))
+        cur.execute("INSERT INTO subfiles VALUES (?, ?)", (700666, "I"))
+        conn.commit()
+    finally:
+        conn.close()
+
+    try:
+        client.post("/api/database/sq-index", json={"path": big_sq})
+        tt = np.linspace(10.0, 60.0, 2000)
+        yy = np.full_like(tt, 50.0)
+        for dv, iv in zip(cs_d, cs_i):
+            pos = 2.0 * np.degrees(np.arcsin(1.5406 / (2.0 * dv)))
+            yy += xrd_engine.pseudo_voigt(tt, float(pos), iv * 16.0, 0.22, 0.5)
+
+        # 1. Unrestrained Search-Match must find 070-0666 Cs3Bi2I9 as #1 with FoM > 85%
+        r_unrest = client.post(
+            "/api/search-match",
+            json={"two_theta": tt.tolist(), "intensity": yy.tolist(), "source": "local"},
+        )
+        assert r_unrest.status_code == 200
+        m_unrest = r_unrest.json()["matches"]
+        assert m_unrest[0]["id"] == "070-0666"
+        assert m_unrest[0]["formula"] == "Cs3Bi2I9"
+        assert m_unrest[0]["fom"] > 85.0
+        # 1-peak MgO decoy must be strongly suppressed
+        mgo_hit = next((m for m in m_unrest if m["id"] == "950-0001" or m["formula"] == "MgO"), None)
+        if mgo_hit:
+            assert mgo_hit["fom"] < 40.0
+
+        # 2. Restrained Search-Match (Subfile = Inorganic, matching all 1,602 rows) must STILL find 070-0666 #1!
+        r_rest = client.post(
+            "/api/search-match",
+            json={
+                "two_theta": tt.tolist(),
+                "intensity": yy.tolist(),
+                "source": "local",
+                "restraints": {"subfiles": {"selected": ["I"], "mode": "or"}},
+            },
+        )
+        assert r_rest.status_code == 200
+        m_rest = r_rest.json()["matches"]
+        assert m_rest[0]["id"] == "070-0666"
+        assert m_rest[0]["fom"] > 85.0
+    finally:
+        client.post("/api/database/sq-index", json={"path": ""})
+
+
+def test_local_directory_indexing_cif_siblings_and_expected_size(tmp_path, monkeypatch):
+    """Verifies local folder indexing (.cif/.json & PDF-2 mirror sibling dedup) and expected_size disambiguation."""
+    import json
+    # 1. Local directory with .cif / .json cards (no .sq file)
+    cif_dir = tmp_path / "my_local_cifs"
+    cif_dir.mkdir()
+    sample_json = {
+        "id": "900-1234",
+        "jcpds": "900-1234",
+        "name": "Custom Perovskite",
+        "formula": "SrTiO3",
+        "system": "Cubic",
+        "space_group": "Pm-3m",
+        "cell": {"a": 3.905, "b": 3.905, "c": 3.905, "alpha": 90, "beta": 90, "gamma": 90},
+        "peaks": [{"two_theta": 32.42, "d": 2.761, "intensity": 100.0, "hkl": [1, 1, 0]}],
+    }
+    (cif_dir / "SrTiO3.json").write_text(json.dumps(sample_json), encoding="utf-8")
+
+    try:
+        res_dir = client.post("/api/database/sq-index", json={"path": str(cif_dir)})
+        assert res_dir.status_code == 200
+        data_dir = res_dir.json()
+        assert data_dir["total_sq_cards"] == 1
+        assert any("SrTiO3" == p["formula"] for p in data_dir["preview_phases"])
+
+        # 2. PDF-2 sibling deduplication (pdf2-0.sq, pdf2-1.sq, pdf2-2.sq with identical card count > 1000)
+        sib_dir = tmp_path / "PDF2_Siblings"
+        sib_dir.mkdir()
+        for idx_s in (0, 1, 2):
+            sp = sib_dir / f"pdf2-{idx_s}.sq"
+            conn = sqlite3.connect(str(sp))
+            conn.execute("CREATE TABLE infodb (ncard INTEGER)")
+            conn.execute("INSERT INTO infodb VALUES (50000)")
+            conn.execute("CREATE TABLE id (id INTEGER PRIMARY KEY, formula TEXT, dval TEXT, intens TEXT)")
+            conn.execute("INSERT INTO id VALUES (361451, 'ZnO', '2.4759,2.8143', '100,57')")
+            conn.commit()
+            conn.close()
+        (sib_dir / "pdf2-0.sq.search").write_bytes(b"")
+
+        deduped = xrd_engine.resolve_sq_paths(str(sib_dir))
+        assert len(deduped) == 1
+        assert os.path.basename(deduped[0]) == "pdf2-0.sq"
+
+        # 3. expected_size disambiguates user's real pdf2-1.sq over sample_data/pdf2-1.sq
+        fake_docs = tmp_path / "Documents"
+        fake_pdf_sub = fake_docs / "PDF2"
+        fake_pdf_sub.mkdir(parents=True)
+        user_sq = fake_pdf_sub / "pdf2-1.sq"
+        xrd_engine.create_sq_database(str(user_sq), [sample_json])
+        # Pad file size slightly so its byte count differs from sample_data/pdf2-1.sq
+        real_size = os.path.getsize(str(user_sq))
+        monkeypatch.setattr(xrd_engine, "get_user_search_directories", lambda: [str(fake_docs)])
+        resolved_by_size = xrd_engine.resolve_sq_paths("pdf2-1.sq", expected_size=real_size)
+        assert resolved_by_size == [os.path.abspath(str(user_sq))]
+    finally:
+        client.post("/api/database/sq-index", json={"path": ""})
+
+
+def test_python_310_311_fstring_syntax_compatibility():
+    """Ensures no Python 3.12+ PEP 701 backslashes inside f-string {...} expressions break Python 3.10/3.11 CI."""
+    import ast
+    import glob
+
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    py_files = [
+        p for p in glob.glob(os.path.join(base, "**", "*.py"), recursive=True)
+        if ".venv" not in p
+    ]
+    assert len(py_files) >= 3
+    for py_path in py_files:
+        src = open(py_path, encoding="utf-8").read()
+        tree = ast.parse(src, filename=py_path)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FormattedValue):
+                seg = ast.get_source_segment(src, node) or ""
+                assert "\\" not in seg, f"Python <3.12 incompatible backslash in f-string at {py_path}:{node.lineno}: {seg}"
+
+
+
+
 
 

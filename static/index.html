@@ -288,31 +288,31 @@
   <div id="dbIndexModal" class="popup-backdrop" hidden>
     <div class="db-index-dialog" role="dialog" aria-labelledby="dbIndexTitle">
       <div class="db-index-header">
-        <span id="dbIndexTitle" class="db-index-title">db index — Local .sq Database Path</span>
+        <span id="dbIndexTitle" class="db-index-title">db index — Local Database Path (.sq / .cif / .json)</span>
         <button id="closeDbIndexBtn" class="icon-btn" title="Close">✕</button>
       </div>
       <div class="db-index-body">
         <div class="field-item">
-          <span class="field-tag">Local Desktop Folder or .sq File Path (e.g. pdf2-1.sq)</span>
+          <span class="field-tag">Local Folder or .sq / .cif Database Path (e.g. C:\Users\...\Documents\PDF2)</span>
           <div class="db-filter-row">
-            <input id="sqPathInput" class="input" type="text" placeholder="C:\Users\...\Desktop\pdf2-1.sq" />
+            <input id="sqPathInput" class="input" type="text" placeholder="C:\Users\...\Documents\PDF2\pdf2-2.sq" />
             <button id="sqApplyPathBtn" class="btn btn-chive">Set Path</button>
           </div>
         </div>
 
         <div class="sq-picker-actions">
-          <label class="btn btn-sm" for="sqFilePicker">Browse .sq File...</label>
-          <input id="sqFilePicker" type="file" accept=".sq,.sqlite,.sqlite3,.db" multiple hidden />
-          <label class="btn btn-sm" for="sqFolderPicker">Browse Desktop Folder...</label>
+          <label id="sqBrowseFileBtn" class="btn btn-sm" for="sqFilePicker">Browse .sq File...</label>
+          <input id="sqFilePicker" type="file" accept=".sq,.sqlite,.sqlite3,.db,.cif,.json" multiple hidden />
+          <label id="sqBrowseFolderBtn" class="btn btn-sm" for="sqFolderPicker">Browse Local Folder...</label>
           <input id="sqFolderPicker" type="file" webkitdirectory directory multiple hidden />
-          <button id="sqScanDesktopBtn" class="btn btn-sm">Scan Desktop</button>
+          <button id="sqScanDesktopBtn" class="btn btn-sm">Scan Local Folders</button>
           <button id="sqClearIndexBtn" class="btn btn-sm">Reset Default</button>
         </div>
 
         <div id="sqStatusBox" class="sq-status-box">No external .sq file indexed yet (using built-in database/).</div>
 
         <div class="field-item">
-          <span class="field-tag" id="sqBrowserDirLabel">Detected .sq Databases &amp; Desktop Folders</span>
+          <span class="field-tag" id="sqBrowserDirLabel">Detected Databases &amp; Local Folders</span>
           <div id="sqBrowserList" class="sq-browser-list"></div>
         </div>
       </div>

@@ -1230,7 +1230,8 @@ function searchMatchClient(
     candidates = filterPhasesByRestraintsClient(candidates, restraints, query);
   }
 
-  const totalExpWeight = expPeaks.reduce((acc, ep) => acc + Math.max(Number(ep.intensity || 10), 5), 0) || 1.0;
+  const totalExpWeight = expPeaks.reduce((acc, ep) => acc + Math.max(Number(ep.intensity || 10), 3), 0) || 1.0;
+  const nExp = expPeaks.length;
 
   const ranked = [];
   for (const phase of candidates) {
@@ -1240,8 +1241,10 @@ function searchMatchClient(
     let matchedRefWeight = 0;
     let totalRefWeight = 0;
     let matchedCount = 0;
+    let observableRefCount = 0;
     for (const rp of refInRange) {
-      totalRefWeight += rp.intensity || 10;
+      const rpInt = Math.max(Number(rp.intensity || 0), 0.1);
+      if (rpInt >= 4.0) observableRefCount++;
       let bestDiff = 999;
       let bestEp = null;
       for (const ep of expPeaks) {
@@ -1253,9 +1256,13 @@ function searchMatchClient(
       }
       if (bestDiff <= toleranceDeg && bestEp) {
         matchedCount++;
-        const prox = 1.0 - 0.30 * (bestDiff / toleranceDeg);
-        const intSim = 1.0 - 0.15 * (Math.abs((bestEp.intensity || 50) - (rp.intensity || 50)) / 100.0);
-        matchedRefWeight += (rp.intensity || 10) * Math.max(0.2, prox * intSim);
+        const prox = 1.0 - 0.48 * (bestDiff / toleranceDeg);
+        const intSim = 1.0 - 0.22 * (Math.abs((bestEp.intensity || 50) - rpInt) / 100.0);
+        const wEff = Math.max(rpInt, 2.0);
+        totalRefWeight += wEff;
+        matchedRefWeight += wEff * Math.max(0.20, prox * intSim);
+      } else {
+        totalRefWeight += rpInt >= 5.0 ? rpInt : rpInt * 0.15;
       }
     }
 
@@ -1270,25 +1277,45 @@ function searchMatchClient(
         }
         if (bestRpDiff <= toleranceDeg) {
           matchedExpCount++;
-          matchedExpWeight += Math.max(Number(ep.intensity || 10), 5) * (1.0 - 0.25 * (bestRpDiff / toleranceDeg));
+          matchedExpWeight += Math.max(Number(ep.intensity || 10), 3) * (1.0 - 0.25 * (bestRpDiff / toleranceDeg));
         }
+      }
+
+      const innerStrong = refInRange.filter(
+        (rp) => rp.two_theta >= tMin + 0.4 && rp.two_theta <= tMax - 0.4 && Number(rp.intensity || 0) >= 65.0
+      );
+      let strongestLineFactor = 1.0;
+      if (innerStrong.length) {
+        const topRp = innerStrong.reduce((a, b) => (Number(b.intensity || 0) > Number(a.intensity || 0) ? b : a));
+        let topDiff = 999;
+        for (const ep of expPeaks) {
+          const d = Math.abs(ep.two_theta - topRp.two_theta);
+          if (d < topDiff) topDiff = d;
+        }
+        if (topDiff > toleranceDeg * 1.25) strongestLineFactor = 0.62;
+      }
+
+      let specFactor = 1.0;
+      if (nExp >= 4) {
+        if (matchedCount === 1) specFactor = 0.48;
+        else if (matchedCount === 2 && nExp >= 6) specFactor = 0.78;
       }
 
       const refScore = (matchedRefWeight / totalRefWeight) * 100.0;
       const expScore = (matchedExpWeight / totalExpWeight) * 100.0;
-      const fom = 0.68 * refScore + 0.32 * expScore;
+      const fom = (0.58 * refScore + 0.42 * expScore) * strongestLineFactor * specFactor;
 
       ranked.push({
         ...phase,
         fom: Number(Math.min(100, fom).toFixed(1)),
         matched_peaks: matchedCount,
-        total_ref_peaks: refInRange.length,
+        total_ref_peaks: Math.max(matchedCount, observableRefCount || refInRange.length),
         matched_exp_peaks: matchedExpCount,
-        total_exp_peaks: expPeaks.length
+        total_exp_peaks: nExp
       });
     }
   }
-  return ranked.sort((a, b) => b.fom - a.fom);
+  return ranked.sort((a, b) => (b.fom - a.fom) || (b.matched_peaks - a.matched_peaks));
 }
 
 function assignMillerIndicesClient(twoTheta, intensity, referencePhase, system, cell, toleranceDeg = 0.55) {
@@ -2950,10 +2977,7 @@ async function runSearchMatch(opts = {}) {
   try {
     let matches = null;
     const clientExtras = state.backendAvailable
-      ? [
-          ...(source === 'local' || source === 'all' ? loadCustomLocalStoragePhasesClient() : []),
-          ...filterExtrasForSource(state.dbResults)
-        ]
+      ? (source === 'local' || source === 'all' ? loadCustomLocalStoragePhasesClient() : [])
       : [
           ...(source === 'local' || source === 'all' ? (state.sqIndex.clientPhases || []) : []),
           ...(source === 'local' ? loadLocalDatabaseClient() : filterExtrasForSource(state.dbResults))
@@ -3009,9 +3033,11 @@ async function runSearchMatch(opts = {}) {
     state.dbResults = matches;
     if (matches.length) {
       applyActiveReference(matches[0]);
+      showToast(`Auto Match: ${matches[0].formula} (${matches[0].id}) — ${matches[0].fom}% FoM`, 'ok', 2800);
     } else {
       renderDbResults();
       renderGraph();
+      showToast('No matching phases found for current pattern and restraints.', 'info', 3000);
     }
   } finally {
     if (btn) btn.textContent = 'Auto Match';
@@ -4266,8 +4292,14 @@ async function initBackendAndSqStatus() {
     state.sqIndex.rawPath = data.raw_path || '';
     state.sqIndex.files = data.files || [];
     state.sqIndex.totalCards = data.total_sq_cards || 0;
+    if (Array.isArray(data.preview_phases) && data.preview_phases.length > 0) {
+      state.sqIndex.clientPhases = data.preview_phases.map((p) => enrichPhaseClient(p));
+    }
     updateDbFolderPathUI();
     updateSqStatusBoxUI(data);
+    if (state.sqIndex.files.length > 0 && (state.dbSource === 'local' || state.dbSource === 'all')) {
+      refreshDbViewWithoutMatch();
+    }
   } catch (_) {
     state.backendAvailable = false;
   }
@@ -4292,7 +4324,7 @@ function updateDbFolderPathUI() {
     idxBtn.classList.add('has-active');
   } else {
     pathEl.textContent = 'database/ (Local + COD + OPTIMADE)';
-    pathEl.title = 'Click to configure local Desktop .sq database index';
+    pathEl.title = 'Click to configure local .sq / .cif database folder';
     idxBtn.classList.remove('has-active');
   }
 }
@@ -4309,9 +4341,10 @@ function updateSqStatusBoxUI(statusObj, errorMsg = '') {
   if (files.length > 0) {
     box.classList.add('ok');
     const summary = files.map((f) => `${f.name} (${f.cards ?? '?'} cards)`).join(', ');
-    box.textContent = `Indexed .sq database: ${summary}`;
+    const fullNote = state.sqIndex.rawPath ? ` — ${state.sqIndex.rawPath}` : '';
+    box.textContent = `Indexed local database: ${summary}${fullNote}`;
   } else {
-    box.textContent = 'No external .sq file indexed yet (using built-in database/).';
+    box.textContent = 'No external .sq / folder indexed yet (using built-in database/).';
   }
 }
 
@@ -4322,10 +4355,10 @@ async function openDbIndexModal() {
   if (state.sqIndex.rawPath) {
     input.value = state.sqIndex.rawPath;
   } else if (state.desktopDir && !input.value) {
-    input.placeholder = `${state.desktopDir}\\pdf2-1.sq`;
+    input.placeholder = `${state.desktopDir}\\pdf2-2.sq`;
   }
   if (state.backendAvailable) {
-    await browseServerSqDirectory();
+    await browseServerSqDirectory(state.sqIndex.rawPath || '');
   } else {
     renderClientSqBrowserFallback();
   }
@@ -4338,20 +4371,20 @@ function closeDbIndexModal() {
 function renderClientSqBrowserFallback() {
   const label = document.getElementById('sqBrowserDirLabel');
   const list = document.getElementById('sqBrowserList');
-  label.textContent = 'Static Browser Mode — Use "Browse .sq File..." or "Browse Desktop Folder..." above';
+  label.textContent = 'Static Browser Mode — Use "Browse .sq File..." or "Browse Local Folder..." above';
   list.innerHTML = '';
   const files = state.sqIndex.files || [];
   if (!files.length) {
     const row = document.createElement('div');
     row.className = 'sq-item';
-    row.textContent = 'Select a local .sq file (e.g. pdf2-1.sq) from your Desktop folder above.';
+    row.textContent = 'Select a local .sq file (e.g. pdf2-2.sq) or folder above.';
     list.appendChild(row);
     return;
   }
   files.forEach((f) => {
     const row = document.createElement('div');
     row.className = 'sq-item';
-    row.innerHTML = `<span>🗄️ ${f.name}</span><span class="sq-item-meta">${f.cards || 0} cards (loaded)</span>`;
+    row.innerHTML = `<span>🗄️ ${escapeHtml(f.name)}</span><span class="sq-item-meta">${f.cards || 0} cards (loaded)</span>`;
     list.appendChild(row);
   });
 }
@@ -4371,24 +4404,51 @@ async function browseServerSqDirectory(dirPath = '') {
     if (!resp.ok) return;
     const data = await resp.json();
     if (data.desktop_dir) state.desktopDir = data.desktop_dir;
-    label.textContent = `Folder: ${data.current_dir || 'Desktop'}`;
+    const curDir = data.current_dir || 'Local Folder';
+    label.textContent = `Folder: ${curDir}`;
     list.innerHTML = '';
 
-    // Quick-detected .sq databases across Desktop / sample_data / database
-    if (!dirPath && Array.isArray(data.discovered_sq_files) && data.discovered_sq_files.length > 0) {
-      data.discovered_sq_files.forEach((sq) => {
-        const row = document.createElement('div');
-        row.className = 'sq-item';
-        row.innerHTML = `
-          <span>🗄️ <strong>${sq.name}</strong> <span style="opacity:0.7;">(${sq.path})</span></span>
-          <span class="sq-item-meta">${sq.size_kb} KB • Click to Index</span>
-        `;
-        row.addEventListener('click', () => {
-          document.getElementById('sqPathInput').value = sq.path;
-          applySqPath(sq.path);
+    // Quick-jump chips for Documents, Desktop, Downloads, Workspace, and local Drives (C:, D:, E:)
+    if (Array.isArray(data.quick_roots) && data.quick_roots.length > 0) {
+      const quickBar = document.createElement('div');
+      quickBar.className = 'sq-item';
+      quickBar.style.display = 'flex';
+      quickBar.style.flexWrap = 'wrap';
+      quickBar.style.gap = '6px';
+      quickBar.style.cursor = 'default';
+      data.quick_roots.forEach((qr) => {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'btn btn-sm';
+        chip.textContent = `📁 ${qr.label}`;
+        chip.title = qr.path;
+        chip.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          browseServerSqDirectory(qr.path);
         });
-        list.appendChild(row);
+        quickBar.appendChild(chip);
       });
+      list.appendChild(quickBar);
+    }
+
+    // Option to index the currently browsed folder directly when it contains .sq or .cif/.json cards
+    const curSqCount = Array.isArray(data.sq_files) ? data.sq_files.length : 0;
+    const curCifJsonCount = Number(data.cif_json_count || 0);
+    if (curSqCount > 0 || curCifJsonCount > 0) {
+      const idxDirRow = document.createElement('div');
+      idxDirRow.className = 'sq-item';
+      const parts = [];
+      if (curSqCount > 0) parts.push(`${curSqCount} .sq`);
+      if (curCifJsonCount > 0) parts.push(`${curCifJsonCount} CIF/JSON`);
+      idxDirRow.innerHTML = `
+        <span>✅ <strong>Use Current Folder</strong> <span style="opacity:0.75;">(${escapeHtml(curDir)})</span></span>
+        <span class="sq-item-meta">${parts.join(' + ')} • Set Path</span>
+      `;
+      idxDirRow.addEventListener('click', () => {
+        document.getElementById('sqPathInput').value = curDir;
+        applySqPath(curDir);
+      });
+      list.appendChild(idxDirRow);
     }
 
     // Parent directory link
@@ -4400,14 +4460,36 @@ async function browseServerSqDirectory(dirPath = '') {
       list.appendChild(up);
     }
 
-    // Current directory .sq files (if browsing a specific subfolder)
-    if (dirPath && Array.isArray(data.sq_files)) {
+    // Current directory .sq files
+    const listedSqPaths = new Set();
+    if (Array.isArray(data.sq_files)) {
       data.sq_files.forEach((sq) => {
+        listedSqPaths.add(sq.path);
         const row = document.createElement('div');
         row.className = 'sq-item';
+        const sizeTxt = sq.size_kb >= 1024 ? `${(sq.size_kb / 1024).toFixed(1)} MB` : `${sq.size_kb} KB`;
         row.innerHTML = `
-          <span>🗄️ <strong>${sq.name}</strong></span>
-          <span class="sq-item-meta">${sq.size_kb} KB • Index</span>
+          <span>🗄️ <strong>${escapeHtml(sq.name)}</strong></span>
+          <span class="sq-item-meta">${sizeTxt} • Click to Index</span>
+        `;
+        row.addEventListener('click', () => {
+          document.getElementById('sqPathInput').value = sq.path;
+          applySqPath(sq.path);
+        });
+        list.appendChild(row);
+      });
+    }
+
+    // Discovered .sq databases across Documents / Desktop / Downloads / sample_data
+    if (Array.isArray(data.discovered_sq_files) && data.discovered_sq_files.length > 0) {
+      data.discovered_sq_files.forEach((sq) => {
+        if (listedSqPaths.has(sq.path)) return;
+        const row = document.createElement('div');
+        row.className = 'sq-item';
+        const sizeTxt = sq.size_kb >= 1024 ? `${(sq.size_kb / 1024).toFixed(1)} MB` : `${sq.size_kb} KB`;
+        row.innerHTML = `
+          <span>🗄️ <strong>${escapeHtml(sq.name)}</strong> <span style="opacity:0.7;">(${escapeHtml(sq.path)})</span></span>
+          <span class="sq-item-meta">${sizeTxt} • Click to Index</span>
         `;
         row.addEventListener('click', () => {
           document.getElementById('sqPathInput').value = sq.path;
@@ -4421,7 +4503,7 @@ async function browseServerSqDirectory(dirPath = '') {
     (data.subdirs || []).forEach((sd) => {
       const row = document.createElement('div');
       row.className = 'sq-item';
-      row.innerHTML = `<span>📁 ${sd.name}</span><span class="sq-item-meta">Browse</span>`;
+      row.innerHTML = `<span>📁 ${escapeHtml(sd.name)}</span><span class="sq-item-meta">Browse</span>`;
       row.addEventListener('click', () => browseServerSqDirectory(sd.path));
       list.appendChild(row);
     });
@@ -4429,16 +4511,38 @@ async function browseServerSqDirectory(dirPath = '') {
     if (!list.children.length) {
       const empty = document.createElement('div');
       empty.className = 'sq-item';
-      empty.textContent = 'No .sq files or subfolders found in this directory.';
+      empty.textContent = 'No .sq/.cif/.json files or subfolders found in this directory.';
       list.appendChild(empty);
     }
   } catch (_) {}
 }
 
-async function applySqPath(rawPathInput = null) {
+async function pickNativeLocalPath(mode = 'file') {
+  if (!state.backendAvailable) return false;
+  try {
+    const initialDir = document.getElementById('sqPathInput').value.trim() || state.sqIndex.rawPath || '';
+    const resp = await fetch('/api/database/pick-path', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode, initial_dir: initialDir })
+    });
+    if (!resp.ok) return false;
+    const data = await resp.json();
+    if (!data.supported) return false;
+    if (data.cancelled || !data.path) return true;
+    document.getElementById('sqPathInput').value = data.path;
+    await applySqPath(data.path);
+    await browseServerSqDirectory(data.path);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+async function applySqPath(rawPathInput = null, expectedSize = null) {
   const pathVal = (rawPathInput !== null ? rawPathInput : document.getElementById('sqPathInput').value).trim();
   if (!pathVal) {
-    updateSqStatusBoxUI(null, 'Please enter a .sq file path (e.g. pdf2-1.sq) or browse from Desktop.');
+    updateSqStatusBoxUI(null, 'Please enter a local folder or .sq/.cif file path, or click Browse above.');
     return;
   }
   if (!state.backendAvailable) {
@@ -4448,15 +4552,24 @@ async function applySqPath(rawPathInput = null) {
     );
     return;
   }
+  const applyBtn = document.getElementById('sqApplyPathBtn');
+  if (applyBtn) {
+    applyBtn.disabled = true;
+    applyBtn.textContent = 'Indexing...';
+  }
   try {
+    const payload = { path: pathVal };
+    if (expectedSize !== null && expectedSize !== undefined && expectedSize > 0) {
+      payload.expected_size = Number(expectedSize);
+    }
     const resp = await fetch('/api/database/sq-index', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: pathVal })
+      body: JSON.stringify(payload)
     });
     const data = await resp.json();
     if (!resp.ok) {
-      updateSqStatusBoxUI(null, data.detail || 'Could not index .sq database at that path.');
+      updateSqStatusBoxUI(null, data.detail || 'Could not index database files at that path.');
       return;
     }
     state.sqIndex.rawPath = data.raw_path || pathVal;
@@ -4470,8 +4583,15 @@ async function applySqPath(rawPathInput = null) {
     // Switch to Local DB and refresh preview list (wait for user to click Auto Match)
     activateDbSourcePill('local');
     refreshDbViewWithoutMatch();
+    const summaryTxt = (state.sqIndex.files || []).map((f) => `${f.name} (${f.cards} cards)`).join(', ');
+    showToast(`Indexed local database: ${summaryTxt || state.sqIndex.rawPath}`, 'ok', 3000);
   } catch (err) {
-    updateSqStatusBoxUI(null, `Failed to index .sq path: ${err.message || err}`);
+    updateSqStatusBoxUI(null, `Failed to index path: ${err.message || err}`);
+  } finally {
+    if (applyBtn) {
+      applyBtn.disabled = false;
+      applyBtn.textContent = 'Set Path';
+    }
   }
 }
 
@@ -4498,24 +4618,28 @@ async function clearSqIndex() {
 }
 
 async function handleSqFileObjects(fileList, folderHint = '') {
-  const sqFiles = Array.from(fileList || []).filter((f) =>
-    /\.(sq|sqlite|sqlite3|db)$/i.test(f.name)
-  );
-  if (!sqFiles.length) {
-    updateSqStatusBoxUI(null, 'No .sq database files were found in the selected folder/selection.');
+  const allArr = Array.from(fileList || []);
+  const sqFiles = allArr.filter((f) => /\.(sq|sqlite|sqlite3|db)$/i.test(f.name));
+  const cifJsonFiles = allArr.filter((f) => /\.(cif|json)$/i.test(f.name) && f.name.toLowerCase() !== 'sq_index.cfg');
+  if (!sqFiles.length && !cifJsonFiles.length) {
+    updateSqStatusBoxUI(null, 'No .sq, .cif, or .json database files were found in the selection.');
     return;
   }
 
   if (state.backendAvailable) {
-    // First try resolving directly on Desktop by relative path or filename (avoids copying huge PDF-2 .sq files!)
-    const relCandidate = folderHint || (sqFiles[0].webkitRelativePath
-      ? sqFiles[0].webkitRelativePath.split('/')[0]
-      : sqFiles[0].name);
+    // First resolve directly on local disk by relative path + exact byte size (preserves companion PDF2.DAT & avoids huge uploads!)
+    const primaryFile = sqFiles[0] || cifJsonFiles[0];
+    const relCandidate = folderHint || (primaryFile.webkitRelativePath
+      ? primaryFile.webkitRelativePath.split('/')[0]
+      : primaryFile.name);
+    const expSize = (!folderHint && sqFiles.length === 1) ? sqFiles[0].size : null;
     try {
+      const reqBody = { path: relCandidate };
+      if (expSize) reqBody.expected_size = expSize;
       const tryResp = await fetch('/api/database/sq-index', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: relCandidate })
+        body: JSON.stringify(reqBody)
       });
       if (tryResp.ok) {
         const data = await tryResp.json();
@@ -4528,11 +4652,28 @@ async function handleSqFileObjects(fileList, folderHint = '') {
         updateSqStatusBoxUI(data);
         activateDbSourcePill('local');
         refreshDbViewWithoutMatch();
+        showToast(`Indexed ${state.sqIndex.rawPath} (${state.sqIndex.totalCards} cards)`, 'ok', 3000);
         return;
       }
     } catch (_) {}
 
-    // Otherwise upload the .sq file(s) to the server's database/ directory and index them
+    // If only .cif/.json files were selected from an external drive not auto-discovered, import via /api/database/upload
+    if (!sqFiles.length && cifJsonFiles.length) {
+      const fdCif = new FormData();
+      cifJsonFiles.forEach((cf) => fdCif.append('files', cf));
+      try {
+        const upCif = await fetch('/api/database/upload', { method: 'POST', body: fdCif });
+        if (upCif.ok) {
+          updateSqStatusBoxUI(null, '');
+          activateDbSourcePill('local');
+          refreshDbViewWithoutMatch();
+          showToast(`Imported ${cifJsonFiles.length} CIF/JSON phase card(s) into Local DB`, 'ok', 3000);
+          return;
+        }
+      } catch (_) {}
+    }
+
+    // Otherwise upload .sq file(s) to the server's database/ directory and index them
     for (const file of sqFiles) {
       const fd = new FormData();
       fd.append('file', file);
@@ -5093,6 +5234,20 @@ function bindDbIndexAndRestraintsEvents() {
   });
   document.getElementById('sqScanDesktopBtn').addEventListener('click', () => browseServerSqDirectory(''));
   document.getElementById('sqClearIndexBtn').addEventListener('click', clearSqIndex);
+
+  document.getElementById('sqBrowseFileBtn').addEventListener('click', async (e) => {
+    if (!state.backendAvailable) return;
+    e.preventDefault();
+    const handled = await pickNativeLocalPath('file');
+    if (!handled) document.getElementById('sqFilePicker').click();
+  });
+
+  document.getElementById('sqBrowseFolderBtn').addEventListener('click', async (e) => {
+    if (!state.backendAvailable) return;
+    e.preventDefault();
+    const handled = await pickNativeLocalPath('folder');
+    if (!handled) document.getElementById('sqFolderPicker').click();
+  });
 
   document.getElementById('sqFilePicker').addEventListener('change', async (e) => {
     if (!e.target.files.length) return;
